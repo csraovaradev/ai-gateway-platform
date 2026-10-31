@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Terraform & secrets
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+.env
+*.pem
