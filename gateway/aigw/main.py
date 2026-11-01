@@ -1,0 +1,137 @@
+"""AI Gateway HTTP service: OpenAI-compatible API with per-team auth, policy, and audit.
+
+Run locally:
+    GATEWAY_CONFIG=../policies/gateway.example.yaml uvicorn --factory aigw.main:create_app --reload
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+import uuid
+from collections.abc import AsyncIterator
+from typing import Any
+
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from . import audit
+from .auth import Authenticator
+from .config import GatewayConfig, TeamSpec, load_config
+from .providers import Provider, ProviderError, build_provider
+from .ratelimit import RateLimiter
+from .schemas import ChatCompletionRequest
+
+DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
+
+
+class GatewayError(Exception):
+    def __init__(self, status: int, message: str, kind: str, headers: dict[str, str] | None = None):
+        super().__init__(message)
+        self.status, self.message, self.kind, self.headers = status, message, kind, headers
+
+
+def _sse(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+
+
+def create_app(
+    config: GatewayConfig | None = None,
+    providers: dict[str, Provider] | None = None,
+    limiter: RateLimiter | None = None,
+) -> FastAPI:
+    config = config or load_config(os.environ.get("GATEWAY_CONFIG", DEFAULT_CONFIG))
+    models = {m.name: m for m in config.models}
+    providers = providers or {m.name: build_provider(m) for m in config.models}
+    authenticator = Authenticator(config.teams)
+    limiter = limiter or RateLimiter()
+
+    app = FastAPI(title="AI Gateway", version="0.1.0")
+
+    @app.exception_handler(GatewayError)
+    async def _gateway_error(_: Request, exc: GatewayError) -> JSONResponse:
+        body = {"error": {"message": exc.message, "type": exc.kind}}
+        return JSONResponse(body, status_code=exc.status, headers=exc.headers)
+
+    def current_team(request: Request) -> TeamSpec:
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise GatewayError(401, "missing bearer token", "authentication_error")
+        team = authenticator.authenticate(token.strip())
+        if team is None:
+            raise GatewayError(401, "invalid api key", "authentication_error")
+        return team
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/v1/models")
+    async def list_models(team: TeamSpec = Depends(current_team)) -> dict[str, Any]:
+        data = [
+            {"id": name, "object": "model", "owned_by": spec.provider}
+            for name, spec in models.items()
+            if team.allows(name)
+        ]
+        return {"object": "list", "data": data}
+
+    @app.post("/v1/chat/completions", response_model=None)
+    async def chat_completions(
+        req: ChatCompletionRequest, team: TeamSpec = Depends(current_team)
+    ) -> dict[str, Any] | StreamingResponse:
+        request_id = f"chatcmpl-{uuid.uuid4().hex}"
+        base = {"request_id": request_id, "team": team.name, "model": req.model,
+                "stream": req.stream}
+
+        if req.model not in models:
+            audit.record(**base, status="denied", http_status=404, reason="unknown_model")
+            raise GatewayError(404, f"model {req.model!r} not found", "invalid_request_error")
+        if not team.allows(req.model):
+            audit.record(**base, status="denied", http_status=403, reason="model_not_allowed")
+            raise GatewayError(403, f"team not allowed to use {req.model!r}", "permission_error")
+        allowed, retry_after = limiter.check(team.name, team.requests_per_minute)
+        if not allowed:
+            audit.record(**base, status="denied", http_status=429, reason="rate_limited")
+            raise GatewayError(429, "rate limit exceeded", "rate_limit_error",
+                               headers={"Retry-After": str(retry_after)})
+
+        provider = providers[req.model]
+        base["provider"] = provider.kind
+        started = time.perf_counter()
+
+        def elapsed_ms() -> int:
+            return int((time.perf_counter() - started) * 1000)
+
+        if req.stream:
+            async def events() -> AsyncIterator[str]:
+                status, chunks = "ok", 0
+                try:
+                    async for event in provider.stream(req, request_id):
+                        chunks += 1
+                        yield _sse(event)
+                    yield "data: [DONE]\n\n"
+                except ProviderError as exc:
+                    status = "error"
+                    yield _sse({"error": {"message": str(exc), "type": "upstream_error"}})
+                finally:
+                    audit.record(**base, status=status, http_status=200,
+                                 latency_ms=elapsed_ms(), chunks=chunks)
+
+            return StreamingResponse(events(), media_type="text/event-stream",
+                                     headers={"X-Request-Id": request_id})
+
+        try:
+            result = await provider.complete(req, request_id)
+        except ProviderError as exc:
+            audit.record(**base, status="error", http_status=502, latency_ms=elapsed_ms(),
+                         reason=str(exc)[:200])
+            raise GatewayError(502, str(exc), "upstream_error") from exc
+
+        usage = result.get("usage") or {}
+        audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(),
+                     prompt_tokens=usage.get("prompt_tokens"),
+                     completion_tokens=usage.get("completion_tokens"))
+        return result
+
+    return app

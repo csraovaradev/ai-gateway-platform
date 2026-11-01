@@ -1,5 +1,7 @@
 # AI Gateway Platform
 
+[![CI](https://github.com/csraovaradev/ai-gateway-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/csraovaradev/ai-gateway-platform/actions/workflows/ci.yml)
+
 A self-hosted, Kubernetes-native gateway for AI workloads: one front door for **LLM calls** and **MCP tool calls**, with **no long-lived secrets**, per-team policy, and full audit.
 
 > **Status:** 🚧 Under active development. See the [Roadmap](#roadmap) for what works today.
@@ -74,7 +76,41 @@ Key choices are recorded as ADRs in [`docs/adr/`](docs/adr/), including:
 
 ## Quick start
 
-_Coming with Phase 1._
+Run the gateway locally with the mock model (no cloud credentials needed):
+
+```bash
+cd gateway
+make install          # creates .venv and installs dependencies
+make test             # runs the test suite
+make run              # starts the gateway on http://localhost:8080
+```
+
+In another terminal:
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer dev-platform-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "mock-echo", "messages": [{"role": "user", "content": "hello"}]}'
+```
+
+`dev-platform-key` and `dev-data-key` are public demo keys defined in
+[`policies/gateway.example.yaml`](policies/gateway.example.yaml) for local use only.
+Generate real keys with `python -m aigw.keys <team>`; the gateway stores only their SHA-256 hashes.
+
+Because the API is OpenAI-compatible, existing SDKs work by changing the base URL:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="dev-platform-key")
+print(client.chat.completions.create(
+    model="mock-echo", messages=[{"role": "user", "content": "hi"}]
+).choices[0].message.content)
+```
+
+To use real models, edit the example policy: set `upstream_model` on `bedrock-claude`
+(uses your AWS credentials) or point `local-llama` at any OpenAI-compatible server such as Ollama or vLLM.
 
 ## License
 
