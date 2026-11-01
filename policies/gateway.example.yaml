@@ -15,7 +15,7 @@ models:
   # Set upstream_model to a Bedrock model or inference-profile ID enabled in your account.
   - name: bedrock-claude
     provider: bedrock
-    upstream_model: REPLACE_WITH_BEDROCK_MODEL_ID
+    upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
     region: us-west-2
 
   # Any OpenAI-compatible server: vLLM, Ollama, LiteLLM, or a hosted API.
