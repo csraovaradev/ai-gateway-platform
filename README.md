@@ -63,7 +63,7 @@ ai-gateway-platform/
 - [x] **Phase 1: LLM gateway.** OpenAI-compatible endpoint with streaming, routing to Bedrock plus one hosted provider, and team auth.
 - [x] **Phase 2: Zero static secrets.** Vault Kubernetes auth and dynamic AWS credentials for Bedrock, with provider keys leased per request.
 - [x] **Phase 3: MCP gateway.** Proxy for Streamable HTTP MCP servers, per-team tool allowlists, and a tool-call audit log.
-- [ ] **Phase 4: Policy & metering.** Rate limits, token budgets, and per-team cost attribution.
+- [x] **Phase 4: Policy & metering.** Rate limits, token budgets, and per-team cost attribution.
 - [ ] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
 - [ ] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
 
@@ -170,6 +170,20 @@ make run &                                                # gateway on :8080
 # visible tools: ['search', 'get_issue']
 # get_issue: ok: Gateway returns 502 when Vault is sealed
 # delete_issue: refused: tool 'delete_issue' is not allowed for team 'data'
+```
+
+### Budgets and cost attribution
+
+Give a model a `price` (USD per million tokens) and every audit line carries `cost_usd`. Give a team a
+`budget` and it gets `429 insufficient_quota` once its spend for the day or month reaches it; free
+models stay usable. Streamed requests are metered too. With `store: {backend: redis}` rate limits,
+budgets, and MCP sessions are shared by all replicas ([ADR-0003](docs/adr/0003-shared-state-and-metering.md)).
+
+```bash
+python -m aigw.report audit.log               # or: kubectl logs deploy/aigw | python -m aigw.report
+# data  $0.000364
+#   model                  requests  denied  errors   in tokens  out tokens     cost USD
+#   bedrock-claude                4       2       0          34          66     0.000364
 ```
 
 ## License
