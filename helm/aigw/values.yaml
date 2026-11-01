@@ -23,6 +23,22 @@ resources:
   requests: { cpu: 50m, memory: 96Mi }
   limits: { memory: 256Mi }
 
+# Who may reach the pod, and where it may connect (ADR-0005). NetworkPolicy is layer 3/4: it cannot
+# filter by path, so /metrics is also kept off the Ingress, which routes only /v1 and /mcp.
+networkPolicy:
+  enabled: true
+  apiClientNamespaces: [ingress-nginx]  # namespaces allowed to send API traffic
+  monitoringNamespaces: [monitoring]  # namespaces allowed to scrape /metrics
+  vault: { namespace: vault, port: 8200 }
+  redis: { namespace: "", cidr: "", port: 6379 }  # set one: in-cluster namespace or ElastiCache CIDR
+  httpsEgress: true  # Bedrock and MCP servers have no fixed IPs; tighter needs FQDN policies
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+
 # Gateway policy (same format as policies/*.yaml), mounted at /etc/aigw/gateway.yaml.
 # The default targets the local kind setup in scripts/vault-k8s-setup.sh.
 policy:
