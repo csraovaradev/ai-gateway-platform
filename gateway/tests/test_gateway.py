@@ -120,6 +120,17 @@ def test_audit_log_has_no_prompt_content(client, caplog):
     assert "hello gateway" not in line
 
 
+def test_auth_failures_are_audited_without_token(client, caplog):
+    with caplog.at_level("INFO", logger="aigw.audit"):
+        client.post("/v1/chat/completions", json=chat())
+        client.post("/v1/chat/completions", json=chat(), headers=auth("guessed-key"))
+    records = [json.loads(r.getMessage()) for r in caplog.records]
+    assert [r["reason"] for r in records] == ["missing_token", "invalid_api_key"]
+    assert all(r["event"] == "auth" and r["http_status"] == 401 for r in records)
+    assert records[1]["path"] == "/v1/chat/completions"
+    assert "guessed-key" not in caplog.text
+
+
 def test_upstream_failure_is_502():
     class Broken:
         kind = "broken"

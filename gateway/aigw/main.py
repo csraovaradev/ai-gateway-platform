@@ -55,11 +55,17 @@ def create_app(
         return JSONResponse(body, status_code=exc.status, headers=exc.headers)
 
     def current_team(request: Request) -> TeamSpec:
+        # Failed auth is audited too, but never with the presented token.
+        denied = {"event": "auth", "path": request.url.path,
+                  "client": request.client.host if request.client else None,
+                  "status": "denied", "http_status": 401}
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() != "bearer" or not token:
+            audit.record(**denied, reason="missing_token")
             raise GatewayError(401, "missing bearer token", "authentication_error")
         team = authenticator.authenticate(token.strip())
         if team is None:
+            audit.record(**denied, reason="invalid_api_key")
             raise GatewayError(401, "invalid api key", "authentication_error")
         return team
 
