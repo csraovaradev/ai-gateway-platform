@@ -52,3 +52,11 @@ jobs:
         run: helm lint helm/aigw
       - name: ShellCheck
         run: shellcheck scripts/*.sh
+      - name: Prometheus SLO rules
+        run: >-
+          docker run --rm -v "$PWD/observability/prometheus:/rules:ro" --entrypoint promtool
+          prom/prometheus:v3.1.0 check rules /rules/rules.yaml
+      - name: Observability compose file and dashboard
+        run: |
+          docker compose -f observability/docker-compose.yaml config -q
+          python3 -m json.tool observability/grafana/dashboards/aigw.json > /dev/null

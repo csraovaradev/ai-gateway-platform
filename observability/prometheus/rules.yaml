@@ -1,0 +1,73 @@
+# SLOs for the gateway (ADR-0004), with multi-window burn-rate alerts.
+#
+# Availability: 99.5% of chat requests over 30 days do not fail on the gateway side. Denials
+#   (auth, policy, rate limit, budget) are the gateway working as intended, so they are excluded.
+# Latency: 95% of non-streaming chat requests finish within 10 s.
+#
+# Burn rate = observed bad-request ratio / allowed bad-request ratio. A burn rate of 14.4 sustained
+# for 1 hour spends 2% of a 30-day budget; 6 for 6 hours spends 5%. Each alert also requires a short
+# window to agree, so it resolves quickly once the problem stops.
+
+groups:
+  - name: aigw-sli
+    rules:
+      - record: aigw:availability_errors:ratio_rate5m
+        expr: |
+          sum(rate(aigw_requests_total{event="chat_completion", status="error"}[5m]))
+            / sum(rate(aigw_requests_total{event="chat_completion", status!="denied"}[5m]))
+      - record: aigw:availability_errors:ratio_rate30m
+        expr: |
+          sum(rate(aigw_requests_total{event="chat_completion", status="error"}[30m]))
+            / sum(rate(aigw_requests_total{event="chat_completion", status!="denied"}[30m]))
+      - record: aigw:availability_errors:ratio_rate1h
+        expr: |
+          sum(rate(aigw_requests_total{event="chat_completion", status="error"}[1h]))
+            / sum(rate(aigw_requests_total{event="chat_completion", status!="denied"}[1h]))
+      - record: aigw:availability_errors:ratio_rate6h
+        expr: |
+          sum(rate(aigw_requests_total{event="chat_completion", status="error"}[6h]))
+            / sum(rate(aigw_requests_total{event="chat_completion", status!="denied"}[6h]))
+      - record: aigw:availability_errors:ratio_rate30d
+        expr: |
+          sum(rate(aigw_requests_total{event="chat_completion", status="error"}[30d]))
+            / sum(rate(aigw_requests_total{event="chat_completion", status!="denied"}[30d]))
+
+      - record: aigw:latency_slow:ratio_rate5m
+        expr: |
+          1 - sum(rate(aigw_request_duration_seconds_bucket{event="chat_completion", stream="false", le="10.0"}[5m]))
+                / sum(rate(aigw_request_duration_seconds_count{event="chat_completion", stream="false"}[5m]))
+      - record: aigw:latency_slow:ratio_rate1h
+        expr: |
+          1 - sum(rate(aigw_request_duration_seconds_bucket{event="chat_completion", stream="false", le="10.0"}[1h]))
+                / sum(rate(aigw_request_duration_seconds_count{event="chat_completion", stream="false"}[1h]))
+
+  - name: aigw-slo-alerts
+    rules:
+      - alert: AigwAvailabilityBudgetBurnFast
+        expr: |
+          aigw:availability_errors:ratio_rate1h > (14.4 * 0.005)
+            and aigw:availability_errors:ratio_rate5m > (14.4 * 0.005)
+        labels: {severity: page}
+        annotations:
+          summary: Gateway errors are burning the 30-day availability budget 14x too fast
+          runbook: Check upstream_error reasons in the audit log and the failing spans in Jaeger.
+      - alert: AigwAvailabilityBudgetBurnSlow
+        expr: |
+          aigw:availability_errors:ratio_rate6h > (6 * 0.005)
+            and aigw:availability_errors:ratio_rate30m > (6 * 0.005)
+        labels: {severity: ticket}
+        annotations:
+          summary: Gateway errors are burning the 30-day availability budget 6x too fast
+      - alert: AigwLatencySloBreach
+        expr: |
+          aigw:latency_slow:ratio_rate1h > (14.4 * 0.05)
+            and aigw:latency_slow:ratio_rate5m > (14.4 * 0.05)
+        labels: {severity: page}
+        annotations:
+          summary: Too many non-streaming chat requests take longer than 10 s
+      - alert: AigwTargetDown
+        expr: up{job="aigw"} == 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: Prometheus cannot scrape the gateway; it may be down

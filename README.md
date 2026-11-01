@@ -64,7 +64,7 @@ ai-gateway-platform/
 - [x] **Phase 2: Zero static secrets.** Vault Kubernetes auth and dynamic AWS credentials for Bedrock, with provider keys leased per request.
 - [x] **Phase 3: MCP gateway.** Proxy for Streamable HTTP MCP servers, per-team tool allowlists, and a tool-call audit log.
 - [x] **Phase 4: Policy & metering.** Rate limits, token budgets, and per-team cost attribution.
-- [ ] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
+- [x] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
 - [ ] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
 
 ## Design decisions
@@ -184,6 +184,22 @@ python -m aigw.report audit.log               # or: kubectl logs deploy/aigw | p
 # data  $0.000364
 #   model                  requests  denied  errors   in tokens  out tokens     cost USD
 #   bedrock-claude                4       2       0          34          66     0.000364
+```
+
+### Metrics, traces, and SLOs
+
+`/metrics` serves Prometheus metrics built from the same events as the audit log (requests, denials,
+latency, tokens, cost), labelled only with values from the policy file. With
+`OTEL_EXPORTER_OTLP_ENDPOINT` set, requests are traced over OTLP using the GenAI semantic
+conventions, and each audit line carries its `trace_id`. SLOs (99.5% availability, 95% of
+non-streaming requests under 10 s) and burn-rate alerts are in
+[`observability/prometheus/rules.yaml`](observability/prometheus/rules.yaml)
+([ADR-0004](docs/adr/0004-observability.md)).
+
+```bash
+docker compose -f observability/docker-compose.yaml up -d     # AIGW_PORT=8081 if 8080 is taken
+cd gateway && OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 make run
+# Grafana http://127.0.0.1:3000   Prometheus http://127.0.0.1:9090   Jaeger http://127.0.0.1:16686
 ```
 
 ## License
