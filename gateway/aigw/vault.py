@@ -32,7 +32,8 @@ class VaultClient:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.spec = spec
-        self._http = http or httpx.Client(timeout=spec.timeout_seconds)
+        verify = spec.tls.context() if spec.tls.configured else True
+        self._http = http or httpx.Client(timeout=spec.timeout_seconds, verify=verify)
         self._clock = clock
         self._token: str | None = None
         self._token_expires = 0.0

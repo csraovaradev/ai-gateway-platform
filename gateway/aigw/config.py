@@ -9,6 +9,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from .tls import TLSSpec
+
 ProviderKind = Literal["mock", "openai_compat", "bedrock"]
 
 
@@ -22,6 +24,7 @@ class VaultSpec(BaseModel):
     kubernetes_mount: str = "kubernetes"
     jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     timeout_seconds: float = 10.0
+    tls: TLSSpec = Field(default_factory=TLSSpec)
 
     @model_validator(mode="after")
     def _check_auth_fields(self) -> VaultSpec:
@@ -74,8 +77,15 @@ class StoreSpec(BaseModel):
     """Where shared state lives: rate limits, MCP sessions, spend (ADR-0003)."""
 
     backend: Literal["memory", "redis"] = "memory"
-    url: str = "redis://127.0.0.1:6379/0"  # redis backend only
+    url: str = "redis://127.0.0.1:6379/0"  # redis backend only; rediss:// for TLS
     key_prefix: str = "aigw:"
+    tls: TLSSpec = Field(default_factory=TLSSpec)
+
+    @model_validator(mode="after")
+    def _check_tls(self) -> StoreSpec:
+        if self.tls.configured and not self.url.startswith("rediss://"):
+            raise ValueError("store: tls settings need a rediss:// url")
+        return self
 
 
 class McpServerSpec(BaseModel):
@@ -114,6 +124,7 @@ class GatewayConfig(BaseModel):
     models: list[ModelSpec]
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     teams: list[TeamSpec]
+    max_request_bytes: int = Field(default=1_048_576, gt=0)  # larger bodies get 413
 
     @model_validator(mode="after")
     def _check_references(self) -> GatewayConfig:

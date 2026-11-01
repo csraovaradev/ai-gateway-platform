@@ -95,14 +95,19 @@ def build_mcp_router(
                                "permission_error")
         return servers[name]
 
-    async def upstream_headers(request: Request, spec: McpServerSpec) -> dict[str, str]:
+    async def upstream_headers(request: Request, spec: McpServerSpec,
+                               team: TeamSpec) -> dict[str, str]:
         headers = {k: v for k, v in request.headers.items()
                    if k in FORWARD_HEADERS or k.startswith(FORWARD_PREFIX)}
         if secret := tokens.get(spec.name):
             try:
                 token = (await anyio.to_thread.run_sync(secret.get)).get("token")
             except VaultError as exc:
-                raise GatewayError(502, str(exc), "upstream_error") from exc
+                # The Vault error names internal paths: audit it, return a generic message.
+                audit.record(event="mcp", team=team.name, server=spec.name, status="error",
+                             http_status=502, reason=str(exc)[:200])
+                raise GatewayError(502, "mcp server credentials unavailable",
+                                   "upstream_error") from exc
             if token:
                 headers["authorization"] = f"Bearer {token}"
         return headers
@@ -166,7 +171,7 @@ def build_mcp_router(
             return int((time.perf_counter() - started) * 1000)
 
         upstream = client.build_request("POST", spec.url, content=raw,
-                                        headers=await upstream_headers(request, spec),
+                                        headers=await upstream_headers(request, spec, team),
                                         timeout=spec.timeout_seconds)
         span_attrs = {"mcp.server": server, "mcp.method": base["method"], "aigw.team": team.name}
         if method == "tools/call":
@@ -237,7 +242,7 @@ def build_mcp_router(
             audit.record(**base, status="denied", http_status=404, reason="unknown_session")
             raise GatewayError(404, "session not found", "invalid_request_error")
         upstream = client.build_request("GET", spec.url, timeout=None,
-                                        headers=await upstream_headers(request, spec))
+                                        headers=await upstream_headers(request, spec, team))
         try:
             resp = await client.send(upstream, stream=True)
         except httpx.HTTPError as exc:
@@ -265,7 +270,7 @@ def build_mcp_router(
             raise GatewayError(404, "session not found", "invalid_request_error")
         try:
             resp = await client.request("DELETE", spec.url, timeout=spec.timeout_seconds,
-                                        headers=await upstream_headers(request, spec))
+                                        headers=await upstream_headers(request, spec, team))
         except httpx.HTTPError as exc:
             raise GatewayError(502, "mcp server unreachable", "upstream_error") from exc
         await store.delete(f"mcp-session:{request.headers['mcp-session-id']}")

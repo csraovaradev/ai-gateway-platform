@@ -23,6 +23,7 @@ from . import audit, metrics, tracing
 from .auth import Authenticator
 from .config import GatewayConfig, TeamSpec, load_config
 from .errors import GatewayError
+from .limits import BodySizeLimit
 from .mcp import build_mcp_router
 from .metering import Meter, cost_usd
 from .providers import Provider, ProviderError, build_provider
@@ -32,6 +33,7 @@ from .store import MemoryStore, RedisStore, Store, StoreError
 from .vault import VaultClient
 
 DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
+UPSTREAM_ERROR = "upstream provider error; see request_id in the gateway audit log"
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -49,12 +51,13 @@ def create_app(
     vault = VaultClient(config.vault) if config.vault else None
     providers = providers or {m.name: build_provider(m, vault) for m in config.models}
     authenticator = Authenticator(config.teams)
-    store: Store = (RedisStore(config.store.url, config.store.key_prefix)
+    store: Store = (RedisStore(config.store.url, config.store.key_prefix, tls=config.store.tls)
                     if config.store.backend == "redis" else MemoryStore())
     limiter = limiter or RateLimiter(store)
     meter = Meter(store)
 
     app = FastAPI(title="AI Gateway", version="0.1.0")
+    app.add_middleware(BodySizeLimit, max_bytes=config.max_request_bytes)
 
     @app.exception_handler(GatewayError)
     async def _gateway_error(_: Request, exc: GatewayError) -> JSONResponse:
@@ -151,7 +154,7 @@ def create_app(
 
         if req.stream:
             async def events() -> AsyncIterator[str]:
-                status, chunks, tokens = "ok", 0, {}
+                status, chunks, tokens, reason = "ok", 0, {}, None
                 with upstream_span() as span:
                     try:
                         async for event in provider.stream(req, request_id):
@@ -160,16 +163,20 @@ def create_app(
                             yield _sse(event)
                         yield "data: [DONE]\n\n"
                     except ProviderError as exc:
-                        status = "error"
-                        yield _sse({"error": {"message": str(exc), "type": "upstream_error"}})
+                        # Upstream errors can carry ARNs, account IDs, or internal paths: clients
+                        # get a generic message, the audit line keeps the detail.
+                        status, reason = "error", str(exc)[:200]
+                        yield _sse({"error": {"message": UPSTREAM_ERROR,
+                                              "type": "upstream_error"}})
                     finally:
                         prompt = tokens.get("prompt_tokens")
                         completion = tokens.get("completion_tokens")
                         cost = cost_usd(model, prompt, completion)
                         end_span(span, status, prompt, completion, cost)
+                        extra = {"reason": reason} if reason else {}
                         audit.record(**base, status=status, http_status=200,
                                      latency_ms=elapsed_ms(), chunks=chunks, prompt_tokens=prompt,
-                                     completion_tokens=completion, cost_usd=cost)
+                                     completion_tokens=completion, cost_usd=cost, **extra)
                         await meter.charge(team, cost)
 
             return StreamingResponse(events(), media_type="text/event-stream",
@@ -182,7 +189,8 @@ def create_app(
                 end_span(span, "error", None, None, 0.0)
                 audit.record(**base, status="error", http_status=502, latency_ms=elapsed_ms(),
                              reason=str(exc)[:200])
-                raise GatewayError(502, str(exc), "upstream_error") from exc
+                raise GatewayError(502, UPSTREAM_ERROR, "upstream_error",
+                                   headers={"X-Request-Id": request_id}) from exc
 
             usage = result.get("usage") or {}
             prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")

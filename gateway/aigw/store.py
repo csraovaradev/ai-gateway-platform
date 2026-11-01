@@ -13,6 +13,8 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from .tls import TLSSpec
+
 
 class StoreError(Exception):
     """The shared store is unreachable. The gateway fails closed."""
@@ -93,11 +95,16 @@ return {1, 0}
 
 
 class RedisStore:
-    def __init__(self, url: str, key_prefix: str = "aigw:", client: Any = None) -> None:
+    def __init__(self, url: str, key_prefix: str = "aigw:", client: Any = None,
+                 tls: TLSSpec | None = None) -> None:
         if client is None:
             import redis.asyncio as redis
 
-            client = redis.from_url(url, decode_responses=True, socket_timeout=2)
+            ssl_args = {}
+            if tls is not None and tls.configured:
+                ssl_args = {"ssl_ca_certs": tls.ca_cert, "ssl_certfile": tls.client_cert,
+                            "ssl_keyfile": tls.client_key}
+            client = redis.from_url(url, decode_responses=True, socket_timeout=2, **ssl_args)
         self._redis = client
         self._prefix = key_prefix
         self._window_script = client.register_script(_SLIDING_WINDOW)

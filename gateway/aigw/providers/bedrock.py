@@ -44,7 +44,13 @@ class BedrockProvider:
                     "aws_secret_access_key": creds["secret_key"],
                     "aws_session_token": creds.get("security_token"),
                 }
-            self._client = boto3.client("bedrock-runtime", region_name=self.spec.region, **keys)
+            from botocore.config import Config
+
+            # boto3's defaults allow several attempts of 60 s each; bound the total wait instead.
+            config = Config(connect_timeout=5, read_timeout=self.spec.timeout_seconds,
+                            retries={"total_max_attempts": 2, "mode": "standard"})
+            self._client = boto3.client("bedrock-runtime", region_name=self.spec.region,
+                                        config=config, **keys)
             self._client_creds = creds
         return self._client
 
