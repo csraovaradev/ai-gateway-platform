@@ -202,6 +202,23 @@ cd gateway && OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 make run
 # Grafana http://127.0.0.1:3000   Prometheus http://127.0.0.1:9090   Jaeger http://127.0.0.1:16686
 ```
 
+### On Amazon EKS
+
+[`terraform/eks`](terraform/eks) builds a VPC, an EKS cluster with Graviton Spot nodes and NetworkPolicy
+enforcement, ElastiCache (TLS), ECR, and a KMS key for Vault auto-unseal. Vault runs in the cluster
+with TLS and gets its AWS credentials through IRSA, so no AWS access key exists anywhere: the gateway
+proves its identity to Vault with its service account, and Vault proves its identity to AWS with its own.
+Running cost is roughly $0.18/hour; `terraform destroy` removes it all.
+
+```bash
+terraform -chdir=terraform/iam-bedrock apply
+echo 'admin_cidrs = ["'"$(curl -s https://checkip.amazonaws.com)"'/32"]' > terraform/eks/terraform.tfvars
+terraform -chdir=terraform/eks init && terraform -chdir=terraform/eks apply        # ~15 minutes
+terraform -chdir=terraform/iam-bedrock apply \
+  -var "vault_role_arns=[\"$(terraform -chdir=terraform/eks output -raw vault_role_arn)\"]"
+scripts/eks-deploy.sh     # image to ECR, Vault (init, config), gateway, smoke test
+```
+
 ### Hardening
 
 The [threat model](docs/threat-model.md) walks every trust boundary with STRIDE and links each threat to

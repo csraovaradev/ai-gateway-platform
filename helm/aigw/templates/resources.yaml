@@ -58,6 +58,9 @@ spec:
             - name: vault-token
               mountPath: {{ .Values.vaultToken.mountPath }}
               readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: policy
           configMap:
@@ -69,6 +72,9 @@ spec:
                   path: token
                   audience: {{ .Values.vaultToken.audience }}
                   expirationSeconds: {{ .Values.vaultToken.expirationSeconds }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

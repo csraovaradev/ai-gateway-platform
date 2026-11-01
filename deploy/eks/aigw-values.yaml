@@ -1,0 +1,60 @@
+# The gateway on EKS. Rendered by scripts/eks-deploy.sh from `terraform -chdir=terraform/eks output`.
+# Two replicas share rate limits, budgets, and MCP sessions through ElastiCache (ADR-0003).
+
+image:
+  repository: __IMAGE_REPO__
+  tag: __IMAGE_TAG__
+
+replicaCount: 2
+
+extraVolumes:
+  - name: vault-ca
+    secret:
+      secretName: vault-ca
+extraVolumeMounts:
+  - name: vault-ca
+    mountPath: /etc/aigw-tls/vault-ca
+    readOnly: true
+
+networkPolicy:
+  apiClientNamespaces: [api-clients]
+  monitoringNamespaces: [monitoring]
+  vault: { namespace: vault, port: 8200 }
+  redis: { cidr: __VPC_CIDR__, port: 6379 }
+
+policy:
+  vault:
+    address: https://vault.vault.svc:8200
+    auth: kubernetes
+    kubernetes_role: aigw
+    jwt_path: /var/run/secrets/vault/token
+    tls:
+      ca_cert: /etc/aigw-tls/vault-ca/ca.crt
+
+  # ElastiCache's certificate chains to Amazon's public CA, so the system trust store verifies it.
+  store:
+    backend: redis
+    url: __REDIS_URL__
+
+  models:
+    - name: mock-echo
+      provider: mock
+    - name: bedrock-claude
+      provider: bedrock
+      upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+      region: __REGION__
+      vault_path: aws/creds/bedrock
+      price: { input_per_mtok: 1.00, output_per_mtok: 5.00 }
+
+  teams:
+    - name: platform
+      key_sha256:
+        - 9831e20a4d38b6fdfa34285772c4b88de26d51134c15107cb941d53b70859e63
+      allowed_models: ["*"]
+      requests_per_minute: 120
+    - name: data
+      key_sha256:
+        - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
+      allowed_models: [mock-echo, bedrock-claude]
+      requests_per_minute: 10
+      budget: { usd: 1, period: day }

@@ -4,6 +4,12 @@ variable "region" {
   default     = "us-west-2"
 }
 
+variable "vault_role_arns" {
+  description = "Additional Vault roles allowed to assume aigw-bedrock, e.g. the EKS IRSA role."
+  type        = list(string)
+  default     = []
+}
+
 variable "name_prefix" {
   description = "Prefix for IAM resource names."
   type        = string

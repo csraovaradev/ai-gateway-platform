@@ -1,0 +1,62 @@
+# Vault on EKS (ADR-0001, ADR-0005). Rendered by scripts/eks-deploy.sh, which fills the __PLACEHOLDERS__
+# from `terraform -chdir=terraform/eks output`.
+#
+# - TLS on the listener, with a certificate from the deploy script's private CA.
+# - Auto-unseal with AWS KMS: no unseal keys to type in after a restart.
+# - AWS credentials through IRSA (service account annotation): no AWS key stored anywhere.
+# - Single node with file storage on an EBS volume. For production, run 3 replicas with Raft.
+
+injector:
+  enabled: false
+
+global:
+  tlsDisable: false
+
+server:
+  serviceAccount:
+    create: true
+    name: vault
+    annotations:
+      eks.amazonaws.com/role-arn: __VAULT_ROLE_ARN__
+
+  extraEnvironmentVars:
+    VAULT_CACERT: /vault/userconfig/vault-tls/ca.crt
+
+  volumes:
+    - name: vault-tls
+      secret:
+        secretName: vault-tls
+  volumeMounts:
+    - name: vault-tls
+      mountPath: /vault/userconfig/vault-tls
+      readOnly: true
+
+  dataStorage:
+    enabled: true
+    size: 5Gi
+
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+  standalone:
+    enabled: true
+    config: |
+      ui = false
+      disable_mlock = true
+
+      listener "tcp" {
+        address         = "[::]:8200"
+        cluster_address = "[::]:8201"
+        tls_cert_file   = "/vault/userconfig/vault-tls/tls.crt"
+        tls_key_file    = "/vault/userconfig/vault-tls/tls.key"
+      }
+
+      storage "file" {
+        path = "/vault/data"
+      }
+
+      seal "awskms" {
+        region     = "__REGION__"
+        kms_key_id = "__KMS_KEY_ID__"
+      }

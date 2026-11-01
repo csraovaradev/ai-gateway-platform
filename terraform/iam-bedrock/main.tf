@@ -57,8 +57,9 @@ data "aws_iam_policy_document" "bedrock_trust" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
-      type        = "AWS"
-      identifiers = [aws_iam_user.vault.arn]
+      type = "AWS"
+      # The dev Vault's IAM user, plus Vault's IRSA role on EKS (from terraform/eks).
+      identifiers = concat([aws_iam_user.vault.arn], var.vault_role_arns)
     }
   }
 }

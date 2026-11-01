@@ -19,6 +19,10 @@ vaultToken:
   expirationSeconds: 600
   mountPath: /var/run/secrets/vault
 
+# Extra volumes, e.g. a CA bundle for Vault or Redis TLS (policy: vault.tls.ca_cert).
+extraVolumes: []
+extraVolumeMounts: []
+
 resources:
   requests: { cpu: 50m, memory: 96Mi }
   limits: { memory: 256Mi }
