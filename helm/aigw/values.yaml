@@ -1,0 +1,57 @@
+image:
+  repository: ai-gateway
+  tag: dev
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+serviceAccount:
+  # Must match bound_service_account_names in the Vault Kubernetes auth role.
+  name: aigw
+
+service:
+  port: 8080
+
+# Projected service-account token presented to Vault. Its audience is only Vault, so it cannot be
+# replayed against the Kubernetes API; the default API token is not mounted at all.
+vaultToken:
+  audience: vault
+  expirationSeconds: 600
+  mountPath: /var/run/secrets/vault
+
+resources:
+  requests: { cpu: 50m, memory: 96Mi }
+  limits: { memory: 256Mi }
+
+# Gateway policy (same format as policies/*.yaml), mounted at /etc/aigw/gateway.yaml.
+# The default targets the local kind setup in scripts/vault-k8s-setup.sh.
+policy:
+  vault:
+    address: http://vault.vault.svc:8200
+    auth: kubernetes
+    kubernetes_role: aigw
+    jwt_path: /var/run/secrets/vault/token
+
+  models:
+    - name: mock-echo
+      provider: mock
+
+    # The gateway calling its own mock-echo as an OpenAI-compatible upstream, with the upstream
+    # key read from Vault KV. Proves the pod's Vault login and KV read with no cloud account.
+    - name: mock-via-vault
+      provider: openai_compat
+      base_url: http://127.0.0.1:8080/v1
+      upstream_model: mock-echo
+      vault_path: secret/data/aigw/upstream/self
+
+  teams:
+    - name: platform
+      key_sha256:
+        - 9831e20a4d38b6fdfa34285772c4b88de26d51134c15107cb941d53b70859e63
+      allowed_models: ["*"]
+      requests_per_minute: 120
+    - name: data
+      key_sha256:
+        - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
+      allowed_models: [mock-echo]
+      requests_per_minute: 10

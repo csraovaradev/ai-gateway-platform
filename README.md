@@ -133,6 +133,25 @@ scripts/vault-dev-setup.sh          # prints: export VAULT_TOKEN=...
 cd gateway && make run CONFIG=../policies/gateway.vault.example.yaml
 ```
 
+### On Kubernetes (kind) with no secrets in the pod
+
+The [Helm chart](helm/aigw) mounts no Kubernetes API token and no Vault token. The pod presents a
+projected service-account token whose audience is only `vault`; Vault verifies it and returns a token
+limited to the `aigw` policy.
+
+```bash
+kind create cluster --name aigw
+docker build -t ai-gateway:dev gateway && kind load docker-image ai-gateway:dev --name aigw
+helm install vault hashicorp/vault -n vault --create-namespace --kube-context kind-aigw \
+  --set server.dev.enabled=true --set server.dev.devRootToken=root --set injector.enabled=false
+scripts/vault-k8s-setup.sh
+helm install aigw helm/aigw -n aigw --create-namespace --kube-context kind-aigw
+kubectl --context kind-aigw -n aigw port-forward svc/aigw 8090:8080
+```
+
+Then call model `mock-via-vault` on `localhost:8090`. That model reads its upstream key from Vault,
+so a 200 proves the pod logged in to Vault with only its service-account identity.
+
 ## License
 
 [Apache 2.0](LICENSE)
