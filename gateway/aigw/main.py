@@ -13,24 +13,21 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import audit
 from .auth import Authenticator
 from .config import GatewayConfig, TeamSpec, load_config
+from .errors import GatewayError
+from .mcp import build_mcp_router
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
 from .schemas import ChatCompletionRequest
 from .vault import VaultClient
 
 DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
-
-
-class GatewayError(Exception):
-    def __init__(self, status: int, message: str, kind: str, headers: dict[str, str] | None = None):
-        super().__init__(message)
-        self.status, self.message, self.kind, self.headers = status, message, kind, headers
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -41,6 +38,7 @@ def create_app(
     config: GatewayConfig | None = None,
     providers: dict[str, Provider] | None = None,
     limiter: RateLimiter | None = None,
+    mcp_http: httpx.AsyncClient | None = None,
 ) -> FastAPI:
     config = config or load_config(os.environ.get("GATEWAY_CONFIG", DEFAULT_CONFIG))
     models = {m.name: m for m in config.models}
@@ -142,4 +140,5 @@ def create_app(
                      completion_tokens=usage.get("completion_tokens"))
         return result
 
+    app.include_router(build_mcp_router(config, current_team, limiter, vault, mcp_http))
     return app

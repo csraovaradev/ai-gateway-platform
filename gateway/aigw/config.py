@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
 
@@ -56,28 +57,47 @@ class ModelSpec(BaseModel):
         return self
 
 
+class McpServerSpec(BaseModel):
+    """An upstream MCP server reached at /mcp/{name} (ADR-0002)."""
+
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
+    url: str  # Streamable HTTP endpoint, e.g. http://jira-mcp:8000/mcp
+    vault_path: str | None = None  # KV v2 secret whose `token` is sent upstream as a bearer token
+    timeout_seconds: float = 60.0
+
+
 class TeamSpec(BaseModel):
     """A team that calls the gateway. Keys are stored only as SHA-256 hashes."""
 
     name: str
     key_sha256: list[str] = Field(min_length=1)
     allowed_models: list[str] = Field(default_factory=lambda: ["*"])
+    # MCP tools as `server/tool` glob patterns, e.g. "jira/get_*". Empty means no MCP access.
+    allowed_tools: list[str] = Field(default_factory=list)
     requests_per_minute: int = Field(default=60, gt=0)
 
     def allows(self, model: str) -> bool:
         return "*" in self.allowed_models or model in self.allowed_models
 
+    def allows_server(self, server: str) -> bool:
+        return any(fnmatchcase(server, p.split("/", 1)[0]) for p in self.allowed_tools)
+
+    def allows_tool(self, server: str, tool: str) -> bool:
+        return any(fnmatchcase(f"{server}/{tool}", p) for p in self.allowed_tools)
+
 
 class GatewayConfig(BaseModel):
     vault: VaultSpec | None = None
     models: list[ModelSpec]
+    mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     teams: list[TeamSpec]
 
     @model_validator(mode="after")
     def _check_references(self) -> GatewayConfig:
         needs_vault = [m.name for m in self.models if m.vault_path]
+        needs_vault += [s.name for s in self.mcp_servers if s.vault_path]
         if needs_vault and self.vault is None:
-            raise ValueError(f"models {needs_vault} use vault_path but no vault section is set")
+            raise ValueError(f"{needs_vault} use vault_path but no vault section is set")
         names = [m.name for m in self.models]
         if len(names) != len(set(names)):
             raise ValueError("model names must be unique")
@@ -89,6 +109,17 @@ class GatewayConfig(BaseModel):
             unknown = [m for m in team.allowed_models if m != "*" and m not in known]
             if unknown:
                 raise ValueError(f"team {team.name!r} allows unknown models: {unknown}")
+        servers = [s.name for s in self.mcp_servers]
+        if len(servers) != len(set(servers)):
+            raise ValueError("mcp server names must be unique")
+        for team in self.teams:
+            for pattern in team.allowed_tools:
+                prefix = pattern.split("/", 1)[0]
+                if "/" not in pattern and pattern != "*":
+                    raise ValueError(
+                        f"team {team.name!r}: tool pattern {pattern!r} needs server/tool")
+                if not any(fnmatchcase(s, prefix) for s in servers):
+                    raise ValueError(f"team {team.name!r}: {pattern!r} matches no mcp server")
         return self
 
 
