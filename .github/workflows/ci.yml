@@ -29,3 +29,20 @@ jobs:
         run: pytest -q
       - name: Build image
         run: docker build -t ai-gateway:${{ github.sha }} .
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform fmt and validate
+        working-directory: terraform/iam-bedrock
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+      - uses: azure/setup-helm@v4
+      - name: Helm lint
+        run: helm lint helm/aigw
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh

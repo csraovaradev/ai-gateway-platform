@@ -12,7 +12,7 @@ from aigw.ratelimit import RateLimiter
 
 PLATFORM_KEY = "test-platform-key"
 DATA_KEY = "test-data-key"
-EXAMPLE_POLICY = Path(__file__).resolve().parents[2] / "policies" / "gateway.example.yaml"
+POLICIES = Path(__file__).resolve().parents[2] / "policies"
 
 
 def make_config() -> GatewayConfig:
@@ -162,6 +162,7 @@ def test_config_rejects_unknown_model_reference():
         })
 
 
-def test_example_policy_is_valid():
-    cfg = load_config(EXAMPLE_POLICY)
+@pytest.mark.parametrize("policy", sorted(POLICIES.glob("*.yaml")), ids=lambda p: p.name)
+def test_example_policies_are_valid(policy):
+    cfg = load_config(policy)
     assert {m.name for m in cfg.models} >= {"mock-echo"}
