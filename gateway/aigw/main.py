@@ -25,6 +25,7 @@ from .mcp import build_mcp_router
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
 from .schemas import ChatCompletionRequest
+from .store import MemoryStore, RedisStore, Store, StoreError
 from .vault import VaultClient
 
 DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
@@ -45,7 +46,9 @@ def create_app(
     vault = VaultClient(config.vault) if config.vault else None
     providers = providers or {m.name: build_provider(m, vault) for m in config.models}
     authenticator = Authenticator(config.teams)
-    limiter = limiter or RateLimiter()
+    store: Store = (RedisStore(config.store.url, config.store.key_prefix)
+                    if config.store.backend == "redis" else MemoryStore())
+    limiter = limiter or RateLimiter(store)
 
     app = FastAPI(title="AI Gateway", version="0.1.0")
 
@@ -53,6 +56,12 @@ def create_app(
     async def _gateway_error(_: Request, exc: GatewayError) -> JSONResponse:
         body = {"error": {"message": exc.message, "type": exc.kind}}
         return JSONResponse(body, status_code=exc.status, headers=exc.headers)
+
+    @app.exception_handler(StoreError)
+    async def _store_error(_: Request, exc: StoreError) -> JSONResponse:
+        # Fail closed: without the store there are no rate limits or budgets.
+        body = {"error": {"message": str(exc), "type": "service_unavailable"}}
+        return JSONResponse(body, status_code=503)
 
     def current_team(request: Request) -> TeamSpec:
         # Failed auth is audited too, but never with the presented token.
@@ -96,7 +105,7 @@ def create_app(
         if not team.allows(req.model):
             audit.record(**base, status="denied", http_status=403, reason="model_not_allowed")
             raise GatewayError(403, f"team not allowed to use {req.model!r}", "permission_error")
-        allowed, retry_after = limiter.check(team.name, team.requests_per_minute)
+        allowed, retry_after = await limiter.check(team.name, team.requests_per_minute)
         if not allowed:
             audit.record(**base, status="denied", http_status=429, reason="rate_limited")
             raise GatewayError(429, "rate limit exceeded", "rate_limit_error",
@@ -140,5 +149,5 @@ def create_app(
                      completion_tokens=usage.get("completion_tokens"))
         return result
 
-    app.include_router(build_mcp_router(config, current_team, limiter, vault, mcp_http))
+    app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http))
     return app

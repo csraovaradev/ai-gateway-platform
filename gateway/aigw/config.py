@@ -57,6 +57,14 @@ class ModelSpec(BaseModel):
         return self
 
 
+class StoreSpec(BaseModel):
+    """Where shared state lives: rate limits, MCP sessions, spend (ADR-0003)."""
+
+    backend: Literal["memory", "redis"] = "memory"
+    url: str = "redis://127.0.0.1:6379/0"  # redis backend only
+    key_prefix: str = "aigw:"
+
+
 class McpServerSpec(BaseModel):
     """An upstream MCP server reached at /mcp/{name} (ADR-0002)."""
 
@@ -88,6 +96,7 @@ class TeamSpec(BaseModel):
 
 class GatewayConfig(BaseModel):
     vault: VaultSpec | None = None
+    store: StoreSpec = Field(default_factory=StoreSpec)
     models: list[ModelSpec]
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     teams: list[TeamSpec]

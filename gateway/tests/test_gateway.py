@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from aigw.config import GatewayConfig, load_config
 from aigw.main import create_app
 from aigw.providers import ProviderError
 from aigw.ratelimit import RateLimiter
+from aigw.store import MemoryStore
 
 PLATFORM_KEY = "test-platform-key"
 DATA_KEY = "test-data-key"
@@ -147,11 +149,11 @@ def test_upstream_failure_is_502():
 
 def test_rate_limiter_window_resets():
     now = [0.0]
-    limiter = RateLimiter(window_seconds=60, clock=lambda: now[0])
-    assert limiter.check("t", 1) == (True, 0)
-    assert limiter.check("t", 1)[0] is False
+    limiter = RateLimiter(MemoryStore(clock=lambda: now[0]), window_seconds=60)
+    assert asyncio.run(limiter.check("t", 1)) == (True, 0)
+    assert asyncio.run(limiter.check("t", 1))[0] is False
     now[0] = 61
-    assert limiter.check("t", 1) == (True, 0)
+    assert asyncio.run(limiter.check("t", 1)) == (True, 0)
 
 
 def test_config_rejects_unknown_model_reference():

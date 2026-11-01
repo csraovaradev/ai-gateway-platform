@@ -2,7 +2,7 @@ FROM python:3.12-slim AS build
 WORKDIR /src
 COPY pyproject.toml ./
 COPY aigw ./aigw
-RUN pip install --no-cache-dir --prefix=/install ".[bedrock]"
+RUN pip install --no-cache-dir --prefix=/install ".[bedrock,redis]"
 
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 GATEWAY_CONFIG=/etc/aigw/gateway.yaml

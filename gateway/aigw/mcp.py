@@ -21,6 +21,7 @@ from . import audit
 from .config import GatewayConfig, McpServerSpec, TeamSpec
 from .errors import GatewayError
 from .ratelimit import RateLimiter
+from .store import Store
 from .vault import LeasedSecret, VaultClient, VaultError
 
 PARSE_ERROR = -32700
@@ -37,7 +38,7 @@ FORWARD_HEADERS = frozenset({"accept", "content-type", "last-event-id", "mcp-met
                              "mcp-protocol-version", "mcp-session-id"})
 FORWARD_PREFIX = "mcp-param-"
 RESPONSE_HEADERS = frozenset({"content-type", "mcp-session-id"})
-MAX_SESSIONS = 10_000
+SESSION_TTL_SECONDS = 24 * 3600
 
 
 def _rpc_error(rpc_id: Any, code: int, message: str, status: int = 200,
@@ -72,6 +73,7 @@ def build_mcp_router(
     config: GatewayConfig,
     current_team: Callable[..., TeamSpec],
     limiter: RateLimiter,
+    store: Store,
     vault: VaultClient | None = None,
     http: httpx.AsyncClient | None = None,
 ) -> APIRouter:
@@ -79,8 +81,6 @@ def build_mcp_router(
     tokens = {s.name: LeasedSecret(vault, s.vault_path)
               for s in config.mcp_servers if vault and s.vault_path}
     client = http or httpx.AsyncClient()
-    # Which team opened each handshake-protocol session. Per replica, like the rate limiter.
-    owners: dict[str, str] = {}
     router = APIRouter()
 
     def server_for(name: str, team: TeamSpec) -> McpServerSpec:
@@ -105,9 +105,10 @@ def build_mcp_router(
                 headers["authorization"] = f"Bearer {token}"
         return headers
 
-    def session_ok(request: Request, team: TeamSpec) -> bool:
+    async def session_ok(request: Request, team: TeamSpec) -> bool:
+        """A handshake-protocol session may only be used by the team that opened it."""
         sid = request.headers.get("mcp-session-id")
-        return sid is None or owners.get(sid) == team.name
+        return sid is None or await store.get(f"mcp-session:{sid}") == team.name
 
     @router.post("/mcp/{server}", response_model=None)
     async def post(server: str, request: Request,
@@ -145,7 +146,7 @@ def build_mcp_router(
         ):
             return deny("header_mismatch", HEADER_MISMATCH,
                         "Mcp-Method/Mcp-Name headers do not match the request body", 400)
-        if not session_ok(request, team):
+        if not await session_ok(request, team):
             return deny("unknown_session", INVALID_REQUEST, "session not found", 404)
         if method == "tools/call":
             if not isinstance(name, str):
@@ -154,7 +155,7 @@ def build_mcp_router(
             if not team.allows_tool(server, name):
                 return deny("tool_not_allowed", PERMISSION_DENIED,
                             f"tool {name!r} is not allowed for team {team.name!r}")
-            allowed, retry_after = limiter.check(team.name, team.requests_per_minute)
+            allowed, retry_after = await limiter.check(team.name, team.requests_per_minute)
             if not allowed:
                 return deny("rate_limited", PERMISSION_DENIED, "rate limit exceeded", 429,
                             {"Retry-After": str(retry_after)})
@@ -173,9 +174,7 @@ def build_mcp_router(
             return _rpc_error(rpc_id, INTERNAL_ERROR, "mcp server unreachable", 502)
 
         if method == "initialize" and (sid := resp.headers.get("mcp-session-id")):
-            if len(owners) >= MAX_SESSIONS:
-                owners.pop(next(iter(owners)))
-            owners[sid] = team.name
+            await store.set(f"mcp-session:{sid}", team.name, SESSION_TTL_SECONDS)
         out_headers = {k: v for k, v in resp.headers.items() if k in RESPONSE_HEADERS}
 
         def finish(status_code: int, tool_error: bool | None = None) -> None:
@@ -227,7 +226,7 @@ def build_mcp_router(
         """Server-to-client stream of a handshake-protocol session."""
         spec = server_for(server, team)
         base = {"event": "mcp", "team": team.name, "server": server, "method": "GET"}
-        if not session_ok(request, team):
+        if not await session_ok(request, team):
             audit.record(**base, status="denied", http_status=404, reason="unknown_session")
             raise GatewayError(404, "session not found", "invalid_request_error")
         upstream = client.build_request("GET", spec.url, timeout=None,
@@ -254,7 +253,7 @@ def build_mcp_router(
                     team: TeamSpec = Depends(current_team)) -> Response:
         spec = server_for(server, team)
         base = {"event": "mcp", "team": team.name, "server": server, "method": "DELETE"}
-        if not session_ok(request, team) or "mcp-session-id" not in request.headers:
+        if "mcp-session-id" not in request.headers or not await session_ok(request, team):
             audit.record(**base, status="denied", http_status=404, reason="unknown_session")
             raise GatewayError(404, "session not found", "invalid_request_error")
         try:
@@ -262,7 +261,7 @@ def build_mcp_router(
                                         headers=await upstream_headers(request, spec))
         except httpx.HTTPError as exc:
             raise GatewayError(502, "mcp server unreachable", "upstream_error") from exc
-        owners.pop(request.headers["mcp-session-id"], None)
+        await store.delete(f"mcp-session:{request.headers['mcp-session-id']}")
         audit.record(**base, status="ok" if resp.status_code < 400 else "error",
                      http_status=resp.status_code)
         return Response(status_code=resp.status_code)

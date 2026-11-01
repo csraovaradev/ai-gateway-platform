@@ -11,6 +11,12 @@ permissions:
 jobs:
   gateway:
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+    env:
+      AIGW_TEST_REDIS_URL: redis://localhost:6379/0
     defaults:
       run:
         working-directory: gateway
