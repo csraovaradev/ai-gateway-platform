@@ -112,13 +112,14 @@ def create_app(
             audit.record(**base, status="denied", http_status=429, reason="rate_limited")
             raise GatewayError(429, "rate limit exceeded", "rate_limit_error",
                                headers={"Retry-After": str(retry_after)})
-        if await meter.over_budget(team):
+        model = models[req.model]
+        # Budgets limit spend, so they only gate models that cost something.
+        if model.price is not None and await meter.over_budget(team):
             audit.record(**base, status="denied", http_status=429, reason="budget_exceeded")
             budget = team.budget
             raise GatewayError(429, f"team {team.name!r} has used its budget of "
                                f"${budget.usd:g} per {budget.period}", "insufficient_quota")
 
-        model = models[req.model]
         provider = providers[req.model]
         base["provider"] = provider.kind
         started = time.perf_counter()

@@ -70,6 +70,12 @@ def test_unpriced_models_do_not_spend_budget():
     assert [chat(client, "free").status_code for _ in range(3)] == [200, 200, 200]
 
 
+def test_free_models_stay_usable_after_budget_is_spent():
+    client = TestClient(create_app(config({"usd": 5})))
+    assert [chat(client).status_code for _ in range(2)] == [200, 429]
+    assert chat(client, "free").status_code == 200
+
+
 @pytest.mark.parametrize(("now", "period", "key"), [
     (datetime(2026, 11, 30, 23, 0, tzinfo=UTC), "day", "spend:t:2026-11-30"),
     (datetime(2026, 11, 30, 23, 0, tzinfo=UTC), "month", "spend:t:2026-11"),
