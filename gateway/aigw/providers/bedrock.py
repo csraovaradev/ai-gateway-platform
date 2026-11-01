@@ -1,7 +1,8 @@
 """Amazon Bedrock provider using the Converse API.
 
-Phase 1 uses the default AWS credential chain (env vars, profile, or IRSA on EKS).
-Phase 2 swaps this for short-lived STS credentials leased from Vault's AWS secrets engine.
+With `vault_path` set, credentials are short-lived STS credentials leased from Vault's AWS
+secrets engine and the boto3 client is rebuilt whenever they rotate (ADR-0001). Without it,
+the default AWS credential chain is used (env vars, profile, or IRSA on EKS).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from starlette.concurrency import iterate_in_threadpool
 
 from ..config import ModelSpec
 from ..schemas import ChatCompletionRequest
+from ..vault import LeasedSecret
 from .base import ProviderError, chunk, completion
 
 _STOP_REASONS = {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length"}
@@ -22,17 +24,28 @@ _STOP_REASONS = {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "len
 class BedrockProvider:
     kind = "bedrock"
 
-    def __init__(self, spec: ModelSpec) -> None:
+    def __init__(self, spec: ModelSpec, credentials: LeasedSecret | None = None) -> None:
         self.spec = spec
+        self._credentials = credentials
         self._client: Any = None
+        self._client_creds: dict[str, Any] | None = None
 
     def _bedrock(self) -> Any:
-        if self._client is None:
+        creds = self._credentials.get() if self._credentials else None
+        if self._client is None or creds is not self._client_creds:
             try:
                 import boto3
             except ImportError as exc:  # pragma: no cover
                 raise ProviderError("boto3 not installed; install aigw[bedrock]") from exc
-            self._client = boto3.client("bedrock-runtime", region_name=self.spec.region)
+            keys: dict[str, Any] = {}
+            if creds is not None:
+                keys = {
+                    "aws_access_key_id": creds["access_key"],
+                    "aws_secret_access_key": creds["secret_key"],
+                    "aws_session_token": creds.get("security_token"),
+                }
+            self._client = boto3.client("bedrock-runtime", region_name=self.spec.region, **keys)
+            self._client_creds = creds
         return self._client
 
     def _request(self, req: ChatCompletionRequest) -> dict[str, Any]:

@@ -22,6 +22,7 @@ from .config import GatewayConfig, TeamSpec, load_config
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
 from .schemas import ChatCompletionRequest
+from .vault import VaultClient
 
 DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
 
@@ -43,7 +44,8 @@ def create_app(
 ) -> FastAPI:
     config = config or load_config(os.environ.get("GATEWAY_CONFIG", DEFAULT_CONFIG))
     models = {m.name: m for m in config.models}
-    providers = providers or {m.name: build_provider(m) for m in config.models}
+    vault = VaultClient(config.vault) if config.vault else None
+    providers = providers or {m.name: build_provider(m, vault) for m in config.models}
     authenticator = Authenticator(config.teams)
     limiter = limiter or RateLimiter()
 

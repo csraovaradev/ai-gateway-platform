@@ -11,6 +11,24 @@ from pydantic import BaseModel, Field, model_validator
 ProviderKind = Literal["mock", "openai_compat", "bedrock"]
 
 
+class VaultSpec(BaseModel):
+    """How the gateway reaches Vault for upstream credentials (ADR-0001)."""
+
+    address: str = "http://127.0.0.1:8200"
+    auth: Literal["token", "kubernetes"] = "token"
+    token_env: str = "VAULT_TOKEN"  # noqa: S105 - name of the env var holding the token
+    kubernetes_role: str | None = None  # kubernetes auth: Vault role bound to the service account
+    kubernetes_mount: str = "kubernetes"
+    jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    timeout_seconds: float = 10.0
+
+    @model_validator(mode="after")
+    def _check_auth_fields(self) -> VaultSpec:
+        if self.auth == "kubernetes" and not self.kubernetes_role:
+            raise ValueError("vault: kubernetes auth requires kubernetes_role")
+        return self
+
+
 class ModelSpec(BaseModel):
     """A model exposed by the gateway, mapped to an upstream provider."""
 
@@ -20,6 +38,9 @@ class ModelSpec(BaseModel):
     base_url: str | None = None  # openai_compat only
     api_key_env: str | None = None  # openai_compat only: env var holding the upstream key
     region: str | None = None  # bedrock only
+    # Vault path for upstream credentials: AWS secrets engine creds for bedrock
+    # (e.g. aws/creds/bedrock), or a KV v2 secret with an `api_key` field for openai_compat.
+    vault_path: str | None = None
     timeout_seconds: float = 120.0
 
     @model_validator(mode="after")
@@ -28,6 +49,10 @@ class ModelSpec(BaseModel):
             raise ValueError(f"model {self.name!r}: openai_compat requires base_url")
         if self.provider == "bedrock" and not self.upstream_model:
             raise ValueError(f"model {self.name!r}: bedrock requires upstream_model")
+        if self.provider == "mock" and self.vault_path:
+            raise ValueError(f"model {self.name!r}: mock takes no vault_path")
+        if self.vault_path and self.api_key_env:
+            raise ValueError(f"model {self.name!r}: set vault_path or api_key_env, not both")
         return self
 
 
@@ -44,11 +69,15 @@ class TeamSpec(BaseModel):
 
 
 class GatewayConfig(BaseModel):
+    vault: VaultSpec | None = None
     models: list[ModelSpec]
     teams: list[TeamSpec]
 
     @model_validator(mode="after")
     def _check_references(self) -> GatewayConfig:
+        needs_vault = [m.name for m in self.models if m.vault_path]
+        if needs_vault and self.vault is None:
+            raise ValueError(f"models {needs_vault} use vault_path but no vault section is set")
         names = [m.name for m in self.models]
         if len(names) != len(set(names)):
             raise ValueError("model names must be unique")

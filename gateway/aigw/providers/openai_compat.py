@@ -7,27 +7,40 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
+import anyio
 import httpx
 
 from ..config import ModelSpec
 from ..schemas import ChatCompletionRequest
+from ..vault import LeasedSecret, VaultError
 from .base import ProviderError
 
 
 class OpenAICompatProvider:
     kind = "openai_compat"
 
-    def __init__(self, spec: ModelSpec, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        spec: ModelSpec,
+        client: httpx.AsyncClient | None = None,
+        api_key: LeasedSecret | None = None,
+    ) -> None:
         self.spec = spec
+        self._api_key = api_key
         self.url = f"{(spec.base_url or '').rstrip('/')}/chat/completions"
         self.upstream_model = spec.upstream_model or spec.name
         self._client = client or httpx.AsyncClient(timeout=spec.timeout_seconds)
 
-    def _headers(self) -> dict[str, str]:
-        # Phase 1: key from an env var. Phase 2 replaces this with a Vault-leased credential.
-        if self.spec.api_key_env and (key := os.environ.get(self.spec.api_key_env)):
-            return {"Authorization": f"Bearer {key}"}
-        return {}
+    async def _headers(self) -> dict[str, str]:
+        key = None
+        if self._api_key is not None:
+            try:
+                key = (await anyio.to_thread.run_sync(self._api_key.get)).get("api_key")
+            except VaultError as exc:
+                raise ProviderError(str(exc)) from exc
+        elif self.spec.api_key_env:
+            key = os.environ.get(self.spec.api_key_env)
+        return {"Authorization": f"Bearer {key}"} if key else {}
 
     def _body(self, req: ChatCompletionRequest, stream: bool) -> dict[str, Any]:
         body = req.model_dump(exclude_none=True)
@@ -36,10 +49,9 @@ class OpenAICompatProvider:
         return body
 
     async def complete(self, req: ChatCompletionRequest, request_id: str) -> dict[str, Any]:
+        headers = await self._headers()
         try:
-            resp = await self._client.post(
-                self.url, json=self._body(req, False), headers=self._headers()
-            )
+            resp = await self._client.post(self.url, json=self._body(req, False), headers=headers)
         except httpx.HTTPError as exc:
             raise ProviderError(f"upstream unreachable: {exc.__class__.__name__}") from exc
         if resp.status_code >= 400:
@@ -52,9 +64,10 @@ class OpenAICompatProvider:
     async def stream(
         self, req: ChatCompletionRequest, request_id: str
     ) -> AsyncIterator[dict[str, Any]]:
+        headers = await self._headers()
         try:
             async with self._client.stream(
-                "POST", self.url, json=self._body(req, True), headers=self._headers()
+                "POST", self.url, json=self._body(req, True), headers=headers
             ) as resp:
                 if resp.status_code >= 400:
                     body = (await resp.aread()).decode(errors="replace")
