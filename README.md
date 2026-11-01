@@ -47,13 +47,14 @@ A single gateway, run as a platform service on EKS:
 
 ```
 ai-gateway-platform/
-├── gateway/          # Gateway service: API, auth, policy, LLM router
-├── mcp-gateway/      # MCP proxy: session handling, tool allowlists, audit
+├── gateway/          # Gateway service: API, auth, policy, LLM router, MCP proxy (aigw/mcp.py)
 ├── terraform/        # EKS, networking, IAM, Vault config (IaC)
-├── helm/             # Helm charts for gateway, MCP proxy, OTel collector
+├── helm/             # Helm charts for the gateway (OTel collector to come)
+├── vault/            # Vault policies
+├── scripts/          # Local Vault setup (dev server and kind)
 ├── policies/         # Example team policies (models, tools, quotas)
 ├── docs/             # Architecture decisions, threat model, runbooks
-└── examples/         # Client configs (Cursor, Claude Code, curl)
+└── examples/         # Demo MCP server and client
 ```
 
 ## Roadmap
@@ -61,7 +62,7 @@ ai-gateway-platform/
 - [ ] **Phase 0: Foundation.** Terraform for VPC and EKS, Vault integration, CI with lint, test, and image build.
 - [x] **Phase 1: LLM gateway.** OpenAI-compatible endpoint with streaming, routing to Bedrock plus one hosted provider, and team auth.
 - [x] **Phase 2: Zero static secrets.** Vault Kubernetes auth and dynamic AWS credentials for Bedrock, with provider keys leased per request.
-- [ ] **Phase 3: MCP gateway.** Proxy for Streamable HTTP MCP servers, per-team tool allowlists, and a tool-call audit log.
+- [x] **Phase 3: MCP gateway.** Proxy for Streamable HTTP MCP servers, per-team tool allowlists, and a tool-call audit log.
 - [ ] **Phase 4: Policy & metering.** Rate limits, token budgets, and per-team cost attribution.
 - [ ] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
 - [ ] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
@@ -151,6 +152,25 @@ kubectl --context kind-aigw -n aigw port-forward svc/aigw 8090:8080
 
 Then call model `mock-via-vault` on `localhost:8090`. That model reads its upstream key from Vault,
 so a 200 proves the pod logged in to Vault with only its service-account identity.
+
+### MCP tool calls
+
+MCP servers listed under `mcp_servers` are reachable at `/mcp/{name}` with the same team keys
+([ADR-0002](docs/adr/0002-mcp-gateway.md)). Each team's `allowed_tools` (`server/tool` globs) decides
+which tools it can call; `tools/list` only shows those tools. Every request writes an `event: "mcp"`
+audit line with team, server, method, and tool, never arguments or results. Both the session-based
+protocol versions and the stateless 2026-07-28 version work.
+
+```bash
+cd gateway && .venv/bin/pip install -e ".[mcp-demo]"
+.venv/bin/python ../examples/mcp-demo/server.py &        # demo "jira" MCP server on :9000
+make run &                                                # gateway on :8080
+
+.venv/bin/python ../examples/mcp-demo/client.py dev-data-key
+# visible tools: ['search', 'get_issue']
+# get_issue: ok: Gateway returns 502 when Vault is sealed
+# delete_issue: refused: tool 'delete_issue' is not allowed for team 'data'
+```
 
 ## License
 
