@@ -65,7 +65,7 @@ ai-gateway-platform/
 - [x] **Phase 3: MCP gateway.** Proxy for Streamable HTTP MCP servers, per-team tool allowlists, and a tool-call audit log.
 - [x] **Phase 4: Policy & metering.** Rate limits, token budgets, and per-team cost attribution.
 - [x] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
-- [ ] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
+- [x] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
 
 ## Design decisions
 
@@ -201,6 +201,22 @@ docker compose -f observability/docker-compose.yaml up -d     # AIGW_PORT=8081 i
 cd gateway && OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 make run
 # Grafana http://127.0.0.1:3000   Prometheus http://127.0.0.1:9090   Jaeger http://127.0.0.1:16686
 ```
+
+### Hardening
+
+The [threat model](docs/threat-model.md) walks every trust boundary with STRIDE and links each threat to
+its mitigation. Phase 6 closed the gaps it found ([ADR-0005](docs/adr/0005-transport-security-and-isolation.md)):
+
+- Upstream errors no longer reach clients (they can contain ARNs, account IDs, or Vault paths); clients
+  get a generic message and the `request_id`, the audit log keeps the detail.
+- Request bodies over 1 MiB get 413, including chunked uploads.
+- Bedrock calls have a 5 s connect timeout, a per-model read timeout, and at most 2 attempts.
+- Vault and Redis connections can pin a CA and present a client certificate (`vault.tls`, `store.tls`).
+- The Helm chart ships a NetworkPolicy (API clients and Prometheus in, DNS/Vault/Redis/HTTPS out) and an
+  Ingress that routes only `/v1` and `/mcp`, so `/metrics` stays internal.
+
+[`tests/test_failure_modes.py`](gateway/tests/test_failure_modes.py) covers Vault down, hung upstreams
+and MCP servers, leaky upstream errors, and oversized bodies.
 
 ## License
 
