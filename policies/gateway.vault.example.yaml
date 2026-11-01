@@ -21,6 +21,9 @@ models:
     upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
     region: us-west-2
     vault_path: aws/creds/bedrock
+    # Anthropic list price for Claude Haiku 4.5 (USD per million tokens). Bedrock is priced
+    # separately by AWS: check https://aws.amazon.com/bedrock/pricing/ for your region.
+    price: {input_per_mtok: 1.00, output_per_mtok: 5.00}
 
   - name: local-llama
     provider: openai_compat
@@ -47,3 +50,4 @@ teams:
     allowed_models: [mock-echo, local-llama]
     allowed_tools: ["jira/search", "jira/get_*"]   # read-only: no delete_issue
     requests_per_minute: 10
+    budget: {usd: 5, period: day}               # 429 insufficient_quota once spent

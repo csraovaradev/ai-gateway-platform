@@ -30,6 +30,18 @@ class VaultSpec(BaseModel):
         return self
 
 
+class Price(BaseModel):
+    """USD per million tokens. Configuration, not code: prices change and differ by contract."""
+
+    input_per_mtok: float = Field(ge=0)
+    output_per_mtok: float = Field(ge=0)
+
+
+class Budget(BaseModel):
+    usd: float = Field(gt=0)
+    period: Literal["day", "month"] = "month"  # UTC calendar day or month
+
+
 class ModelSpec(BaseModel):
     """A model exposed by the gateway, mapped to an upstream provider."""
 
@@ -42,6 +54,7 @@ class ModelSpec(BaseModel):
     # Vault path for upstream credentials: AWS secrets engine creds for bedrock
     # (e.g. aws/creds/bedrock), or a KV v2 secret with an `api_key` field for openai_compat.
     vault_path: str | None = None
+    price: Price | None = None  # without it the model is metered in tokens but costs 0
     timeout_seconds: float = 120.0
 
     @model_validator(mode="after")
@@ -83,6 +96,7 @@ class TeamSpec(BaseModel):
     # MCP tools as `server/tool` glob patterns, e.g. "jira/get_*". Empty means no MCP access.
     allowed_tools: list[str] = Field(default_factory=list)
     requests_per_minute: int = Field(default=60, gt=0)
+    budget: Budget | None = None
 
     def allows(self, model: str) -> bool:
         return "*" in self.allowed_models or model in self.allowed_models

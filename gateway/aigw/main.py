@@ -22,6 +22,7 @@ from .auth import Authenticator
 from .config import GatewayConfig, TeamSpec, load_config
 from .errors import GatewayError
 from .mcp import build_mcp_router
+from .metering import Meter, cost_usd
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
 from .schemas import ChatCompletionRequest
@@ -49,6 +50,7 @@ def create_app(
     store: Store = (RedisStore(config.store.url, config.store.key_prefix)
                     if config.store.backend == "redis" else MemoryStore())
     limiter = limiter or RateLimiter(store)
+    meter = Meter(store)
 
     app = FastAPI(title="AI Gateway", version="0.1.0")
 
@@ -110,7 +112,13 @@ def create_app(
             audit.record(**base, status="denied", http_status=429, reason="rate_limited")
             raise GatewayError(429, "rate limit exceeded", "rate_limit_error",
                                headers={"Retry-After": str(retry_after)})
+        if await meter.over_budget(team):
+            audit.record(**base, status="denied", http_status=429, reason="budget_exceeded")
+            budget = team.budget
+            raise GatewayError(429, f"team {team.name!r} has used its budget of "
+                               f"${budget.usd:g} per {budget.period}", "insufficient_quota")
 
+        model = models[req.model]
         provider = providers[req.model]
         base["provider"] = provider.kind
         started = time.perf_counter()
@@ -131,10 +139,13 @@ def create_app(
                     status = "error"
                     yield _sse({"error": {"message": str(exc), "type": "upstream_error"}})
                 finally:
+                    prompt = tokens.get("prompt_tokens")
+                    completion = tokens.get("completion_tokens")
+                    cost = cost_usd(model, prompt, completion)
                     audit.record(**base, status=status, http_status=200,
-                                 latency_ms=elapsed_ms(), chunks=chunks,
-                                 prompt_tokens=tokens.get("prompt_tokens"),
-                                 completion_tokens=tokens.get("completion_tokens"))
+                                 latency_ms=elapsed_ms(), chunks=chunks, prompt_tokens=prompt,
+                                 completion_tokens=completion, cost_usd=cost)
+                    await meter.charge(team, cost)
 
             return StreamingResponse(events(), media_type="text/event-stream",
                                      headers={"X-Request-Id": request_id})
@@ -147,9 +158,11 @@ def create_app(
             raise GatewayError(502, str(exc), "upstream_error") from exc
 
         usage = result.get("usage") or {}
+        prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+        cost = cost_usd(model, prompt, completion)
         audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(),
-                     prompt_tokens=usage.get("prompt_tokens"),
-                     completion_tokens=usage.get("completion_tokens"))
+                     prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
+        await meter.charge(team, cost)
         return result
 
     app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http))
