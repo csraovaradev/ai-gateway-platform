@@ -60,7 +60,7 @@ ai-gateway-platform/
 
 - [ ] **Phase 0: Foundation.** Terraform for VPC and EKS, Vault integration, CI with lint, test, and image build.
 - [x] **Phase 1: LLM gateway.** OpenAI-compatible endpoint with streaming, routing to Bedrock plus one hosted provider, and team auth.
-- [ ] **Phase 2: Zero static secrets.** Vault Kubernetes auth and dynamic AWS credentials for Bedrock, with provider keys leased per request.
+- [x] **Phase 2: Zero static secrets.** Vault Kubernetes auth and dynamic AWS credentials for Bedrock, with provider keys leased per request.
 - [ ] **Phase 3: MCP gateway.** Proxy for Streamable HTTP MCP servers, per-team tool allowlists, and a tool-call audit log.
 - [ ] **Phase 4: Policy & metering.** Rate limits, token budgets, and per-team cost attribution.
 - [ ] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
