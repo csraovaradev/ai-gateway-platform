@@ -14,10 +14,12 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from opentelemetry.trace import Span, SpanKind, StatusCode
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from . import audit
+from . import audit, metrics, tracing
 from .auth import Authenticator
 from .config import GatewayConfig, TeamSpec, load_config
 from .errors import GatewayError
@@ -84,6 +86,11 @@ def create_app(
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
+    # Scraped from inside the cluster; do not route it through the public ingress (ADR-0004).
+    @app.get("/metrics", include_in_schema=False)
+    async def prometheus_metrics() -> Response:
+        return Response(generate_latest(metrics.REGISTRY), media_type=CONTENT_TYPE_LATEST)
+
     @app.get("/v1/models")
     async def list_models(team: TeamSpec = Depends(current_team)) -> dict[str, Any]:
         data = [
@@ -127,44 +134,65 @@ def create_app(
         def elapsed_ms() -> int:
             return int((time.perf_counter() - started) * 1000)
 
+        def upstream_span():  # OTel GenAI semantic conventions
+            return tracing.tracer.start_as_current_span(
+                f"chat {model.name}", kind=SpanKind.CLIENT, attributes={
+                    "gen_ai.operation.name": "chat", "gen_ai.system": provider.kind,
+                    "gen_ai.request.model": model.upstream_model or model.name,
+                    "aigw.team": team.name, "aigw.request_id": request_id})
+
+        def end_span(span: Span, status: str, prompt: int | None, completion: int | None,
+                     cost: float) -> None:
+            span.set_attributes({"gen_ai.usage.input_tokens": prompt or 0,
+                                 "gen_ai.usage.output_tokens": completion or 0,
+                                 "aigw.cost_usd": cost})
+            if status == "error":
+                span.set_status(StatusCode.ERROR)
+
         if req.stream:
             async def events() -> AsyncIterator[str]:
                 status, chunks, tokens = "ok", 0, {}
-                try:
-                    async for event in provider.stream(req, request_id):
-                        chunks += 1
-                        tokens = event.get("usage") or tokens
-                        yield _sse(event)
-                    yield "data: [DONE]\n\n"
-                except ProviderError as exc:
-                    status = "error"
-                    yield _sse({"error": {"message": str(exc), "type": "upstream_error"}})
-                finally:
-                    prompt = tokens.get("prompt_tokens")
-                    completion = tokens.get("completion_tokens")
-                    cost = cost_usd(model, prompt, completion)
-                    audit.record(**base, status=status, http_status=200,
-                                 latency_ms=elapsed_ms(), chunks=chunks, prompt_tokens=prompt,
-                                 completion_tokens=completion, cost_usd=cost)
-                    await meter.charge(team, cost)
+                with upstream_span() as span:
+                    try:
+                        async for event in provider.stream(req, request_id):
+                            chunks += 1
+                            tokens = event.get("usage") or tokens
+                            yield _sse(event)
+                        yield "data: [DONE]\n\n"
+                    except ProviderError as exc:
+                        status = "error"
+                        yield _sse({"error": {"message": str(exc), "type": "upstream_error"}})
+                    finally:
+                        prompt = tokens.get("prompt_tokens")
+                        completion = tokens.get("completion_tokens")
+                        cost = cost_usd(model, prompt, completion)
+                        end_span(span, status, prompt, completion, cost)
+                        audit.record(**base, status=status, http_status=200,
+                                     latency_ms=elapsed_ms(), chunks=chunks, prompt_tokens=prompt,
+                                     completion_tokens=completion, cost_usd=cost)
+                        await meter.charge(team, cost)
 
             return StreamingResponse(events(), media_type="text/event-stream",
                                      headers={"X-Request-Id": request_id})
 
-        try:
-            result = await provider.complete(req, request_id)
-        except ProviderError as exc:
-            audit.record(**base, status="error", http_status=502, latency_ms=elapsed_ms(),
-                         reason=str(exc)[:200])
-            raise GatewayError(502, str(exc), "upstream_error") from exc
+        with upstream_span() as span:
+            try:
+                result = await provider.complete(req, request_id)
+            except ProviderError as exc:
+                end_span(span, "error", None, None, 0.0)
+                audit.record(**base, status="error", http_status=502, latency_ms=elapsed_ms(),
+                             reason=str(exc)[:200])
+                raise GatewayError(502, str(exc), "upstream_error") from exc
 
-        usage = result.get("usage") or {}
-        prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
-        cost = cost_usd(model, prompt, completion)
-        audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(),
-                     prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
+            usage = result.get("usage") or {}
+            prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+            cost = cost_usd(model, prompt, completion)
+            end_span(span, "ok", prompt, completion, cost)
+            audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(),
+                         prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
         await meter.charge(team, cost)
         return result
 
     app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http))
+    tracing.setup(app)
     return app

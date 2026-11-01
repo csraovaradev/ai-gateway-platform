@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from .config import VaultSpec
+from .tracing import tracer
 
 KV_REFRESH_SECONDS = 300  # KV secrets have no lease; re-read periodically to pick up rotation
 
@@ -76,6 +77,10 @@ class VaultClient:
 
     def read(self, path: str) -> dict[str, Any]:
         """GET a Vault path and return the full response (data, lease_duration, ...)."""
+        with tracer.start_as_current_span("vault read", attributes={"vault.path": path}):
+            return self._read(path)
+
+    def _read(self, path: str) -> dict[str, Any]:
         token = self._ensure_token()
         try:
             return self._call("GET", path, headers={"X-Vault-Token": token})

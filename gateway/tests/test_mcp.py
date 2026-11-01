@@ -108,6 +108,7 @@ def test_allowed_tool_call_is_forwarded_without_client_key(caplog):
     assert "authorization" not in forwarded.headers
     assert json.loads(forwarded.content)["params"]["arguments"] == {"key": "OPS-1"}
     record = json.loads(caplog.records[-1].getMessage())
+    record.pop("trace_id", None)  # present whenever an OTel SDK provider is installed
     assert record | {"ts": None, "latency_ms": None} == {
         "ts": None, "event": "mcp", "team": "data", "server": "jira", "method": "tools/call",
         "tool": "get_issue", "status": "ok", "http_status": 200, "latency_ms": None,

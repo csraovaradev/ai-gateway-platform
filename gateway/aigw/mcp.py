@@ -16,12 +16,14 @@ import anyio
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from opentelemetry.trace import SpanKind
 
 from . import audit
 from .config import GatewayConfig, McpServerSpec, TeamSpec
 from .errors import GatewayError
 from .ratelimit import RateLimiter
 from .store import Store
+from .tracing import tracer
 from .vault import LeasedSecret, VaultClient, VaultError
 
 PARSE_ERROR = -32700
@@ -166,8 +168,13 @@ def build_mcp_router(
         upstream = client.build_request("POST", spec.url, content=raw,
                                         headers=await upstream_headers(request, spec),
                                         timeout=spec.timeout_seconds)
+        span_attrs = {"mcp.server": server, "mcp.method": base["method"], "aigw.team": team.name}
+        if method == "tools/call":
+            span_attrs["gen_ai.tool.name"] = name
         try:
-            resp = await client.send(upstream, stream=True)
+            with tracer.start_as_current_span(f"mcp {base['method']}", kind=SpanKind.CLIENT,
+                                              attributes=span_attrs):
+                resp = await client.send(upstream, stream=True)
         except httpx.HTTPError as exc:
             audit.record(**base, status="error", http_status=502, latency_ms=elapsed_ms(),
                          reason=f"upstream unreachable: {exc.__class__.__name__}")
