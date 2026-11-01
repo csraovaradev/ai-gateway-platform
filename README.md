@@ -109,8 +109,29 @@ print(client.chat.completions.create(
 ).choices[0].message.content)
 ```
 
-To use real models, edit the example policy: set `upstream_model` on `bedrock-claude`
-(uses your AWS credentials) or point `local-llama` at any OpenAI-compatible server such as Ollama or vLLM.
+For real models, `bedrock-claude` calls Amazon Bedrock with your AWS credentials (your account needs
+Bedrock access to Claude Haiku 4.5 in `us-west-2`), and `local-llama` points at any OpenAI-compatible
+server such as Ollama or vLLM.
+
+### Upstream credentials from Vault
+
+With [`policies/gateway.vault.example.yaml`](policies/gateway.vault.example.yaml) the gateway holds no
+cloud keys at all: it leases 15-minute STS credentials for Bedrock from Vault's AWS secrets engine and
+reads upstream API keys from Vault KV ([ADR-0001](docs/adr/0001-vault-dynamic-aws-credentials.md)).
+
+```bash
+# 1. IAM role the gateway's credentials are scoped to (Bedrock invoke only), plus Vault's IAM user
+terraform -chdir=terraform/iam-bedrock init && terraform -chdir=terraform/iam-bedrock apply
+
+# 2. Dev Vault (in-memory; leave it running in its own terminal)
+vault server -dev -dev-root-token-id=root
+
+# 3. Configure Vault and get a gateway token limited to the aigw policy
+scripts/vault-dev-setup.sh          # prints: export VAULT_TOKEN=...
+
+# 4. Run the gateway against Vault
+cd gateway && make run CONFIG=../policies/gateway.vault.example.yaml
+```
 
 ## License
 

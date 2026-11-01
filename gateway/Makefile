@@ -1,5 +1,6 @@
 CONFIG ?= ../policies/gateway.example.yaml
 IMAGE  ?= ai-gateway:dev
+PORT   ?= 8080
 
 .PHONY: install test lint run docker docker-run
 
@@ -13,10 +14,10 @@ lint:
 	.venv/bin/ruff check .
 
 run:
-	GATEWAY_CONFIG=$(CONFIG) .venv/bin/uvicorn --factory aigw.main:create_app --reload --port 8080
+	GATEWAY_CONFIG=$(CONFIG) .venv/bin/uvicorn --factory aigw.main:create_app --reload --port $(PORT)
 
 docker:
 	docker build -t $(IMAGE) .
 
 docker-run:
-	docker run --rm -p 8080:8080 -v $(abspath $(CONFIG)):/etc/aigw/gateway.yaml:ro $(IMAGE)
+	docker run --rm -p $(PORT):8080 -v $(abspath $(CONFIG)):/etc/aigw/gateway.yaml:ro $(IMAGE)

@@ -32,8 +32,9 @@ The project goal is that no gateway replica holds a credential that outlives a f
      Vault and rotatable with `aws/config/rotate-root`.
 6. **Client:** plain `httpx` against the Vault HTTP API rather than `hvac`, to avoid a dependency and
    keep requests easy to fake in tests.
-7. **Backwards compatible:** the policy file selects `credentials: default | vault`; `default` keeps
-   Phase 1 behaviour so the mock-only quickstart needs no Vault.
+7. **Backwards compatible:** a model opts in with `vault_path` (and the policy file then needs a
+   top-level `vault:` section). Models without it keep Phase 1 behaviour, so the mock-only
+   quickstart needs no Vault.
 
 ## Consequences
 

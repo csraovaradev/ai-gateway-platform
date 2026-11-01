@@ -1,0 +1,42 @@
+# Example gateway policy with upstream credentials from Vault (Phase 2, ADR-0001).
+#
+# Same models and teams as gateway.example.yaml, but no cloud keys come from the environment:
+#   bedrock-claude  short-lived STS credentials from Vault's AWS secrets engine
+#   local-llama     upstream API key from Vault KV v2
+#
+# Local setup: scripts/vault-dev-setup.sh, then
+#   make run CONFIG=../policies/gateway.vault.example.yaml
+
+vault:
+  address: http://127.0.0.1:8200
+  auth: token            # in Kubernetes: auth: kubernetes, kubernetes_role: aigw
+  token_env: VAULT_TOKEN
+
+models:
+  - name: mock-echo
+    provider: mock
+
+  - name: bedrock-claude
+    provider: bedrock
+    upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    region: us-west-2
+    vault_path: aws/creds/bedrock
+
+  - name: local-llama
+    provider: openai_compat
+    base_url: http://localhost:11434/v1
+    upstream_model: llama3.2
+    vault_path: secret/data/aigw/upstream/local-llama
+
+teams:
+  - name: platform
+    key_sha256:
+      - 9831e20a4d38b6fdfa34285772c4b88de26d51134c15107cb941d53b70859e63
+    allowed_models: ["*"]
+    requests_per_minute: 120
+
+  - name: data
+    key_sha256:
+      - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
+    allowed_models: [mock-echo, local-llama]
+    requests_per_minute: 10
