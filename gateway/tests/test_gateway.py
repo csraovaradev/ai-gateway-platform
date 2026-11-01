@@ -113,6 +113,18 @@ def test_streaming(client):
     assert events[-1]["choices"][0]["finish_reason"] == "stop"
 
 
+def test_streamed_requests_are_metered(client, caplog):
+    with caplog.at_level("INFO", logger="aigw.audit"), client.stream(
+        "POST", "/v1/chat/completions", json=chat(stream=True), headers=auth(PLATFORM_KEY)
+    ) as resp:
+        events = [json.loads(ln[5:]) for ln in resp.iter_lines()
+                  if ln.startswith("data:") and ln != "data: [DONE]"]
+    assert events[-1]["usage"]["completion_tokens"] == 3
+    record = json.loads(caplog.records[-1].getMessage())
+    assert record["stream"] is True
+    assert (record["prompt_tokens"], record["completion_tokens"]) == (2, 3)
+
+
 def test_audit_log_has_no_prompt_content(client, caplog):
     with caplog.at_level("INFO", logger="aigw.audit"):
         client.post("/v1/chat/completions", json=chat(), headers=auth(PLATFORM_KEY))

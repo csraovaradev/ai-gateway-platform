@@ -120,10 +120,11 @@ def create_app(
 
         if req.stream:
             async def events() -> AsyncIterator[str]:
-                status, chunks = "ok", 0
+                status, chunks, tokens = "ok", 0, {}
                 try:
                     async for event in provider.stream(req, request_id):
                         chunks += 1
+                        tokens = event.get("usage") or tokens
                         yield _sse(event)
                     yield "data: [DONE]\n\n"
                 except ProviderError as exc:
@@ -131,7 +132,9 @@ def create_app(
                     yield _sse({"error": {"message": str(exc), "type": "upstream_error"}})
                 finally:
                     audit.record(**base, status=status, http_status=200,
-                                 latency_ms=elapsed_ms(), chunks=chunks)
+                                 latency_ms=elapsed_ms(), chunks=chunks,
+                                 prompt_tokens=tokens.get("prompt_tokens"),
+                                 completion_tokens=tokens.get("completion_tokens"))
 
             return StreamingResponse(events(), media_type="text/event-stream",
                                      headers={"X-Request-Id": request_id})

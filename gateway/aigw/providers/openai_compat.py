@@ -46,6 +46,8 @@ class OpenAICompatProvider:
         body = req.model_dump(exclude_none=True)
         body["model"] = self.upstream_model
         body["stream"] = stream
+        if stream:  # ask for a final usage chunk so streamed requests are metered
+            body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
         return body
 
     async def complete(self, req: ChatCompletionRequest, request_id: str) -> dict[str, Any]:

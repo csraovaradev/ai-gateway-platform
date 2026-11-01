@@ -7,7 +7,7 @@ from typing import Any
 
 from ..config import ModelSpec
 from ..schemas import ChatCompletionRequest
-from .base import chunk, completion
+from .base import chunk, completion, usage
 
 
 class MockProvider:
@@ -30,9 +30,10 @@ class MockProvider:
     async def stream(
         self, req: ChatCompletionRequest, request_id: str
     ) -> AsyncIterator[dict[str, Any]]:
-        text, _ = self._reply(req)
+        text, prompt_tokens = self._reply(req)
         yield chunk(request_id, req.model, {"role": "assistant", "content": ""})
         words = text.split(" ")
         for i, word in enumerate(words):
             yield chunk(request_id, req.model, {"content": word if i == 0 else " " + word})
-        yield chunk(request_id, req.model, {}, finish_reason="stop")
+        yield chunk(request_id, req.model, {}, finish_reason="stop",
+                    usage=usage(prompt_tokens, len(text.split())))

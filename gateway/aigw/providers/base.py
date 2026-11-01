@@ -42,11 +42,15 @@ def completion(
                 "finish_reason": finish_reason,
             }
         ],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        },
+        "usage": usage(prompt_tokens, completion_tokens),
+    }
+
+
+def usage(prompt_tokens: int, completion_tokens: int) -> dict[str, int]:
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
     }
 
 
@@ -55,11 +59,16 @@ def chunk(
     model: str,
     delta: dict[str, Any],
     finish_reason: str | None = None,
+    usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    return {
+    """A streaming chunk. The final one carries `usage` so streamed requests are metered too."""
+    event: dict[str, Any] = {
         "id": request_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
     }
+    if usage is not None:
+        event["usage"] = usage
+    return event

@@ -16,7 +16,7 @@ from starlette.concurrency import iterate_in_threadpool
 from ..config import ModelSpec
 from ..schemas import ChatCompletionRequest
 from ..vault import LeasedSecret
-from .base import ProviderError, chunk, completion
+from .base import ProviderError, chunk, completion, usage
 
 _STOP_REASONS = {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length"}
 
@@ -100,6 +100,7 @@ class BedrockProvider:
         except Exception as exc:
             raise ProviderError(f"bedrock error: {exc}") from exc
         yield chunk(request_id, req.model, {"role": "assistant", "content": ""})
+        reason, tokens = "stop", None
         async for event in iterate_in_threadpool(iter(resp["stream"])):
             if "contentBlockDelta" in event:
                 text = event["contentBlockDelta"].get("delta", {}).get("text")
@@ -107,4 +108,7 @@ class BedrockProvider:
                     yield chunk(request_id, req.model, {"content": text})
             elif "messageStop" in event:
                 reason = _STOP_REASONS.get(event["messageStop"].get("stopReason", ""), "stop")
-                yield chunk(request_id, req.model, {}, finish_reason=reason)
+            elif "metadata" in event:  # arrives after messageStop and carries token usage
+                u = event["metadata"].get("usage", {})
+                tokens = usage(u.get("inputTokens", 0), u.get("outputTokens", 0))
+        yield chunk(request_id, req.model, {}, finish_reason=reason, usage=tokens)

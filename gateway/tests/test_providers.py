@@ -57,6 +57,7 @@ def test_openai_compat_stream():
         return [e async for e in provider.stream(REQ, "chatcmpl-y")]
 
     events = run(collect())
+    assert provider._body(REQ, True)["stream_options"] == {"include_usage": True}
     assert "".join(e["choices"][0]["delta"]["content"] for e in events) == "hey"
     assert all(e["model"] == "local-llama" for e in events)
 
@@ -85,6 +86,7 @@ class FakeBedrock:
             {"contentBlockDelta": {"delta": {"text": "hel"}}},
             {"contentBlockDelta": {"delta": {"text": "lo"}}},
             {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 9, "outputTokens": 2}}},
         ]}
 
 
@@ -117,3 +119,4 @@ def test_bedrock_stream():
     text = "".join(e["choices"][0]["delta"].get("content", "") for e in events)
     assert text == "hello"
     assert events[-1]["choices"][0]["finish_reason"] == "stop"
+    assert events[-1]["usage"] == {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}
