@@ -77,6 +77,10 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_AUTH_TOKEN=dev-platform-key \
 `mode: production` refuses to start with them, or with any other laptop-only setting
 ([ADR-0008](docs/adr/0008-run-modes.md)); check a policy with `python -m aigw.check --production`.
 
+<p align="center">
+  <img src="docs/images/sign-in.png" alt="AI Gateway sign-in page" width="100%">
+</p>
+
 At level 2 developers sign in instead of sharing keys: `scripts/aigw-login login` (like `aws sso login`),
 then Claude Code gets fresh 15-minute tokens on its own through `apiKeyHelper`
 ([ADR-0007](docs/adr/0007-user-identity-oidc.md)). Recipes for each feature from source are in
