@@ -18,6 +18,9 @@ from .config import VaultSpec
 from .tracing import tracer
 
 KV_REFRESH_SECONDS = 300  # KV secrets have no lease; re-read periodically to pick up rotation
+# Leases and STS credentials expire in real time. time.monotonic() stops while a laptop sleeps or a
+# VM is paused, so a monotonic deadline lets credentials expire before the cache renews them.
+WALL_CLOCK = time.time
 
 
 class VaultError(Exception):
@@ -29,7 +32,7 @@ class VaultClient:
         self,
         spec: VaultSpec,
         http: httpx.Client | None = None,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = WALL_CLOCK,
     ) -> None:
         self.spec = spec
         verify = spec.tls.context() if spec.tls.configured else True
@@ -105,7 +108,7 @@ class LeasedSecret:
         self,
         vault: VaultClient,
         path: str,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = WALL_CLOCK,
     ) -> None:
         self.vault, self.path, self._clock = vault, path, clock
         self._data: dict[str, Any] | None = None
@@ -124,3 +127,8 @@ class LeasedSecret:
                 self._data = data
                 self._refresh_at = self._clock() + lease * 2 / 3
             return self._data
+
+    def invalidate(self) -> None:
+        """Forget the cached secret, e.g. after the upstream says the credentials expired."""
+        with self._lock:
+            self._data = None

@@ -189,3 +189,12 @@ def test_config_requires_vault_section_for_vault_path():
 def test_config_kubernetes_auth_requires_role():
     with pytest.raises(ValueError, match="kubernetes_role"):
         VaultSpec(auth="kubernetes")
+
+
+def test_leases_are_timed_on_the_wall_clock(monkeypatch):
+    # time.monotonic() pauses while a laptop sleeps; STS credentials keep expiring in real time.
+    import time
+    monkeypatch.setenv("VAULT_TOKEN", "dev-token")
+    client = FakeVault({}).client(VaultSpec())
+    assert LeasedSecret(client, "aws/creds/bedrock")._clock is time.time
+    assert VaultClient(VaultSpec())._clock is time.time

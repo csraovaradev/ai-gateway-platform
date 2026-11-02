@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import anyio
@@ -24,6 +24,7 @@ _STOP_REASONS = {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "len
 _ANTHROPIC_VERSION = "bedrock-2023-05-31"
 # Cross-region inference profiles ("us.anthropic...") prefix the base model ID with a geography.
 _PROFILE_PREFIX = re.compile(r"^[a-z-]+\.(?=anthropic\.)")
+_EXPIRED = ("ExpiredTokenException", "ExpiredToken")
 
 
 def _invoke_error(exc: Exception) -> ProviderError:
@@ -87,6 +88,18 @@ class BedrockProvider:
             self._client_creds = creds
         return self._client
 
+    async def _call(self, operation: Callable[[Any], Any]) -> Any:
+        """Run a boto3 call in a thread. If AWS says the leased credentials expired, fetch new
+        ones from Vault and try once more, so a stale cache never reaches the client."""
+        try:
+            return await anyio.to_thread.run_sync(lambda: operation(self._bedrock()))
+        except Exception as exc:
+            code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+            if self._credentials is None or code not in _EXPIRED:
+                raise
+            self._credentials.invalidate()
+        return await anyio.to_thread.run_sync(lambda: operation(self._bedrock()))
+
     def _request(self, req: ChatCompletionRequest) -> dict[str, Any]:
         system = [{"text": m.text()} for m in req.messages if m.role in ("system", "developer")]
         messages = [
@@ -111,7 +124,7 @@ class BedrockProvider:
     async def complete(self, req: ChatCompletionRequest, request_id: str) -> dict[str, Any]:
         body = self._request(req)
         try:
-            resp = await anyio.to_thread.run_sync(lambda: self._bedrock().converse(**body))
+            resp = await self._call(lambda bedrock: bedrock.converse(**body))
         except ProviderError:
             raise
         except Exception as exc:  # botocore raises many error types
@@ -133,7 +146,7 @@ class BedrockProvider:
     ) -> AsyncIterator[dict[str, Any]]:
         body = self._request(req)
         try:
-            resp = await anyio.to_thread.run_sync(lambda: self._bedrock().converse_stream(**body))
+            resp = await self._call(lambda bedrock: bedrock.converse_stream(**body))
         except ProviderError:
             raise
         except Exception as exc:
@@ -157,7 +170,7 @@ class BedrockProvider:
     async def messages(self, body: dict[str, Any], betas: list[str]) -> dict[str, Any]:
         payload = _invoke_body(body, betas)
         try:
-            resp = await anyio.to_thread.run_sync(lambda: self._bedrock().invoke_model(
+            resp = await self._call(lambda bedrock: bedrock.invoke_model(
                 modelId=self.spec.upstream_model, body=payload,
                 contentType="application/json", accept="application/json"))
             return json.loads(resp["body"].read())
@@ -169,10 +182,9 @@ class BedrockProvider:
     ) -> AsyncIterator[dict[str, Any]]:
         payload = _invoke_body(body, betas)
         try:
-            resp = await anyio.to_thread.run_sync(
-                lambda: self._bedrock().invoke_model_with_response_stream(
-                    modelId=self.spec.upstream_model, body=payload,
-                    contentType="application/json", accept="application/json"))
+            resp = await self._call(lambda bedrock: bedrock.invoke_model_with_response_stream(
+                modelId=self.spec.upstream_model, body=payload,
+                contentType="application/json", accept="application/json"))
         except Exception as exc:
             raise _invoke_error(exc) from exc
         try:
@@ -191,7 +203,7 @@ class BedrockProvider:
         payload = _invoke_body({"max_tokens": 1, **body}, betas)
         base_model = _PROFILE_PREFIX.sub("", self.spec.upstream_model or "")
         try:
-            resp = await anyio.to_thread.run_sync(lambda: self._bedrock().count_tokens(
+            resp = await self._call(lambda bedrock: bedrock.count_tokens(
                 modelId=base_model, input={"invokeModel": {"body": payload}}))
         except Exception as exc:
             raise _invoke_error(exc) from exc

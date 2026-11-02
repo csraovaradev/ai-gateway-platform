@@ -288,3 +288,42 @@ def test_bedrock_other_errors_stay_generic(code, status):
         asyncio.run(bedrock(fake).messages(body(), []))
     assert exc.value.status == status
     assert "123456789012" not in (exc.value.client_message or "")
+
+
+class FakeLease:
+    """Stands in for a Vault-leased STS credential: a new dict after every invalidate()."""
+
+    def __init__(self):
+        self.issued = 0
+        self.current = None
+
+    def get(self):
+        if self.current is None:
+            self.issued += 1
+            self.current = {"access_key": f"ASIA{self.issued}", "secret_key": "s",
+                            "security_token": "t"}
+        return self.current
+
+    def invalidate(self):
+        self.current = None
+
+
+def test_expired_vault_credentials_are_replaced_and_the_call_retried(monkeypatch):
+    import boto3
+    # The cache still held credentials that AWS considers expired (laptop slept, VM paused).
+    clients = [FakeBedrockRuntime(error=client_error("ExpiredTokenException", "token expired")),
+               FakeBedrockRuntime()]
+    monkeypatch.setattr(boto3, "client", lambda *a, **kw: clients.pop(0))
+    lease = FakeLease()
+    provider = BedrockProvider(ModelSpec(name="claude", provider="bedrock", region="us-west-2",
+                                         upstream_model="us.anthropic.claude-x-v1:0",
+                                         vault_path="aws/creds/bedrock"), lease)
+    assert asyncio.run(provider.messages(body(), []))["type"] == "message"
+    assert lease.issued == 2 and clients == []
+
+
+def test_expired_credentials_without_vault_are_not_retried():
+    fake = FakeBedrockRuntime(error=client_error("ExpiredTokenException", "token expired"))
+    with pytest.raises(ProviderError):
+        asyncio.run(bedrock(fake).messages(body(), []))
+    assert len(fake.calls) == 1
