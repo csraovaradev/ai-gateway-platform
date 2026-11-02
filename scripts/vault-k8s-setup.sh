@@ -19,7 +19,8 @@ v() {
 }
 
 echo "==> Kubernetes auth"
-v auth list -format=json | grep -q '"kubernetes/"' || v auth enable kubernetes
+auths="$(v auth list -format=json)"  # captured: pipefail + grep -q can SIGPIPE
+grep -q '"kubernetes/"' <<<"$auths" || v auth enable kubernetes
 # Inside the cluster Vault reviews tokens with its own service account (auth-delegator binding).
 v write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc >/dev/null
 v write auth/kubernetes/role/aigw \

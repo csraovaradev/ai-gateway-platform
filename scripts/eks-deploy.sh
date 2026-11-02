@@ -96,13 +96,16 @@ ROOT_TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["r
 k -n vault wait --for=condition=Ready pod/vault-0 --timeout=120s >/dev/null
 
 echo "==> Vault configuration"
-v secrets list -format=json | grep -q '"secret/"' || v secrets enable -path=secret kv-v2 >/dev/null
-v secrets list -format=json | grep -q '"aws/"' || v secrets enable aws >/dev/null
+# Capture before grep: with pipefail, `grep -q` exiting early makes the producer fail (SIGPIPE).
+mounts="$(v secrets list -format=json)"
+grep -q '"secret/"' <<<"$mounts" || v secrets enable -path=secret kv-v2 >/dev/null
+grep -q '"aws/"' <<<"$mounts" || v secrets enable aws >/dev/null
 # No access keys: Vault uses its IRSA role (web identity) to call sts:AssumeRole.
 v write aws/config/root region="$REGION" >/dev/null
 v write aws/roles/bedrock credential_type=assumed_role role_arns="$BEDROCK_ROLE" \
   default_sts_ttl=15m max_sts_ttl=1h >/dev/null
-v auth list -format=json | grep -q '"kubernetes/"' || v auth enable kubernetes >/dev/null
+auths="$(v auth list -format=json)"
+grep -q '"kubernetes/"' <<<"$auths" || v auth enable kubernetes >/dev/null
 v write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc >/dev/null
 v write auth/kubernetes/role/aigw bound_service_account_names=aigw \
   bound_service_account_namespaces=aigw audience=vault policies=aigw ttl=1h >/dev/null

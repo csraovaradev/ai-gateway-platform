@@ -18,7 +18,8 @@ role_arn="$(terraform -chdir="$TF_DIR" output -raw bedrock_role_arn)"
 vault_user="$(terraform -chdir="$TF_DIR" output -raw vault_user_name)"
 
 echo "==> AWS secrets engine"
-vault secrets list -format=json | grep -q '"aws/"' || vault secrets enable aws
+mounts="$(vault secrets list -format=json)"  # captured: pipefail + grep -q can SIGPIPE
+grep -q '"aws/"' <<<"$mounts" || vault secrets enable aws
 
 # Vault needs its own AWS key to call sts:AssumeRole. Dev Vault forgets it on restart, so
 # drop any old keys, create a new one, and pipe it straight into Vault (never echoed or
