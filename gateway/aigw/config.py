@@ -38,6 +38,9 @@ class Price(BaseModel):
 
     input_per_mtok: float = Field(ge=0)
     output_per_mtok: float = Field(ge=0)
+    # Prompt caching (Messages API): Anthropic bills cache writes at 1.25x and reads at 0.1x input.
+    cache_write_per_mtok: float | None = Field(default=None, ge=0)
+    cache_read_per_mtok: float | None = Field(default=None, ge=0)
 
 
 class Budget(BaseModel):
@@ -125,6 +128,8 @@ class GatewayConfig(BaseModel):
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     teams: list[TeamSpec]
     max_request_bytes: int = Field(default=1_048_576, gt=0)  # larger bodies get 413
+    # Coding agents resend the whole conversation (tool results, images) on every turn.
+    max_messages_request_bytes: int = Field(default=32 * 1_048_576, gt=0)
 
     @model_validator(mode="after")
     def _check_references(self) -> GatewayConfig:

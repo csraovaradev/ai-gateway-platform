@@ -43,7 +43,7 @@
 | Spoofing | Reuse another team's MCP session ID | Sessions bound to the opening team; mismatch → 404 | `mcp.py`, ADR-0002 |
 | Tampering | Header says one MCP tool, body calls another | Body is authoritative; `Mcp-Method`/`Mcp-Name` mismatch → `-32020` | `mcp.py` |
 | Repudiation | Team denies having made a call | One audit line per request incl. denials and failed auth, with `trace_id` | `audit.py` |
-| Info disclosure | Upstream error text (AWS ARNs and account ID, Vault paths) returned to clients | **Gap → fixed in Phase 6:** clients get a generic message and `request_id`; detail stays in the audit log | `main.py`, `mcp.py` |
+| Info disclosure | Upstream error text (AWS ARNs and account ID, Vault paths) returned to clients | **Gap → fixed in Phase 6:** clients get a generic message and `request_id`; detail stays in the audit log. Exception (ADR-0006): on `/v1/messages`, Bedrock `ValidationException` wording passes through with ARNs and account IDs scrubbed, because Claude Code's retries depend on it | `main.py`, `mcp.py`, `messages.py` |
 | Info disclosure | `/metrics` exposes team names and spend | **Gap → fixed in Phase 6:** NetworkPolicy admits only ingress controller and Prometheus; ingress routes only `/v1` and `/mcp` | Helm chart |
 | DoS | Oversized request bodies exhaust memory | **Gap → fixed in Phase 6:** body size limit (default 1 MiB) → 413 | `main.py` |
 | DoS | Request floods, budget burn | Per-team sliding-window rate limit and budgets, shared across replicas | `store.py`, `metering.py` |

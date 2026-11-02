@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "jira": {
+      "url": "http://127.0.0.1:8080/mcp/jira",
+      "headers": {
+        "Authorization": "Bearer dev-data-key"
+      }
+    }
+  }
+}

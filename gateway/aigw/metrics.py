@@ -49,4 +49,7 @@ def observe(event: dict[str, Any]) -> None:
     if kind == "chat_completion" and status != "denied":
         TOKENS.labels(team, target, "input").inc(event.get("prompt_tokens") or 0)
         TOKENS.labels(team, target, "output").inc(event.get("completion_tokens") or 0)
+        for direction in ("cache_read", "cache_write"):
+            if event.get(f"{direction}_tokens"):
+                TOKENS.labels(team, target, direction).inc(event[f"{direction}_tokens"])
         COST.labels(team, target).inc(event.get("cost_usd") or 0)

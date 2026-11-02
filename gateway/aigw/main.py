@@ -21,10 +21,11 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from . import audit, metrics, tracing
 from .auth import Authenticator
-from .config import GatewayConfig, TeamSpec, load_config
+from .config import GatewayConfig, ModelSpec, TeamSpec, load_config
 from .errors import GatewayError
 from .limits import BodySizeLimit
 from .mcp import build_mcp_router
+from .messages import build_messages_router
 from .metering import Meter, cost_usd
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
@@ -34,6 +35,13 @@ from .vault import VaultClient
 
 DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
 UPSTREAM_ERROR = "upstream provider error; see request_id in the gateway audit log"
+# Gateway error kinds in Anthropic's vocabulary, by (status, kind) or kind.
+ANTHROPIC_ERROR_TYPES = {
+    (404, "invalid_request_error"): "not_found_error",
+    "insufficient_quota": "rate_limit_error",
+    "upstream_error": "api_error",
+    "service_unavailable": "overloaded_error",
+}
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -57,28 +65,40 @@ def create_app(
     meter = Meter(store)
 
     app = FastAPI(title="AI Gateway", version="0.1.0")
-    app.add_middleware(BodySizeLimit, max_bytes=config.max_request_bytes)
+    app.add_middleware(BodySizeLimit, max_bytes=config.max_request_bytes,
+                       overrides={"/v1/messages": config.max_messages_request_bytes})
+
+    def error_response(request: Request, status: int, message: str, kind: str,
+                       headers: dict[str, str] | None = None) -> JSONResponse:
+        # Anthropic-format clients (Claude Code) expect Anthropic's error envelope.
+        if request.url.path.startswith("/v1/messages"):
+            kind = ANTHROPIC_ERROR_TYPES.get((status, kind), ANTHROPIC_ERROR_TYPES.get(kind, kind))
+            body: dict[str, Any] = {"type": "error", "error": {"type": kind, "message": message}}
+        else:
+            body = {"error": {"message": message, "type": kind}}
+        return JSONResponse(body, status_code=status, headers=headers)
 
     @app.exception_handler(GatewayError)
-    async def _gateway_error(_: Request, exc: GatewayError) -> JSONResponse:
-        body = {"error": {"message": exc.message, "type": exc.kind}}
-        return JSONResponse(body, status_code=exc.status, headers=exc.headers)
+    async def _gateway_error(request: Request, exc: GatewayError) -> JSONResponse:
+        return error_response(request, exc.status, exc.message, exc.kind, exc.headers)
 
     @app.exception_handler(StoreError)
-    async def _store_error(_: Request, exc: StoreError) -> JSONResponse:
+    async def _store_error(request: Request, exc: StoreError) -> JSONResponse:
         # Fail closed: without the store there are no rate limits or budgets.
-        body = {"error": {"message": str(exc), "type": "service_unavailable"}}
-        return JSONResponse(body, status_code=503)
+        return error_response(request, 503, str(exc), "service_unavailable")
 
     def current_team(request: Request) -> TeamSpec:
         # Failed auth is audited too, but never with the presented token.
         denied = {"event": "auth", "path": request.url.path,
                   "client": request.client.host if request.client else None,
                   "status": "denied", "http_status": 401}
+        # OpenAI clients send `Authorization: Bearer`; Anthropic clients may send `x-api-key`.
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() != "bearer" or not token:
+            token = request.headers.get("x-api-key", "")
+        if not token.strip():
             audit.record(**denied, reason="missing_token")
-            raise GatewayError(401, "missing bearer token", "authentication_error")
+            raise GatewayError(401, "missing api key", "authentication_error")
         team = authenticator.authenticate(token.strip())
         if team is None:
             audit.record(**denied, reason="invalid_api_key")
@@ -103,6 +123,30 @@ def create_app(
         ]
         return {"object": "list", "data": data}
 
+    async def admit(team: TeamSpec, name: Any, base: dict[str, Any]) -> ModelSpec:
+        """Policy checks shared by both APIs; each refusal is audited with its reason."""
+        if name not in models:
+            audit.record(**base, status="denied", http_status=404, reason="unknown_model")
+            raise GatewayError(404, f"model {name!r} not found", "invalid_request_error")
+        if not team.allows(name):
+            audit.record(**base, status="denied", http_status=403, reason="model_not_allowed")
+            raise GatewayError(403, f"team not allowed to use {name!r}", "permission_error")
+        allowed, retry_after = await limiter.check(team.name, team.requests_per_minute)
+        if not allowed:
+            audit.record(**base, status="denied", http_status=429, reason="rate_limited")
+            raise GatewayError(429, "rate limit exceeded", "rate_limit_error",
+                               headers={"Retry-After": str(retry_after)})
+        model = models[name]
+        # Budgets limit spend, so they only gate models that cost something.
+        if model.price is not None and await meter.over_budget(team):
+            audit.record(**base, status="denied", http_status=429, reason="budget_exceeded")
+            budget = team.budget
+            # Retry-After over 60 s tells Claude Code to stop retrying and show the error.
+            raise GatewayError(429, f"team {team.name!r} has used its budget of "
+                               f"${budget.usd:g} per {budget.period}", "insufficient_quota",
+                               headers={"Retry-After": "3600"})
+        return model
+
     @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(
         req: ChatCompletionRequest, team: TeamSpec = Depends(current_team)
@@ -110,25 +154,7 @@ def create_app(
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
         base = {"request_id": request_id, "team": team.name, "model": req.model,
                 "stream": req.stream}
-
-        if req.model not in models:
-            audit.record(**base, status="denied", http_status=404, reason="unknown_model")
-            raise GatewayError(404, f"model {req.model!r} not found", "invalid_request_error")
-        if not team.allows(req.model):
-            audit.record(**base, status="denied", http_status=403, reason="model_not_allowed")
-            raise GatewayError(403, f"team not allowed to use {req.model!r}", "permission_error")
-        allowed, retry_after = await limiter.check(team.name, team.requests_per_minute)
-        if not allowed:
-            audit.record(**base, status="denied", http_status=429, reason="rate_limited")
-            raise GatewayError(429, "rate limit exceeded", "rate_limit_error",
-                               headers={"Retry-After": str(retry_after)})
-        model = models[req.model]
-        # Budgets limit spend, so they only gate models that cost something.
-        if model.price is not None and await meter.over_budget(team):
-            audit.record(**base, status="denied", http_status=429, reason="budget_exceeded")
-            budget = team.budget
-            raise GatewayError(429, f"team {team.name!r} has used its budget of "
-                               f"${budget.usd:g} per {budget.period}", "insufficient_quota")
+        model = await admit(team, req.model, base)
 
         provider = providers[req.model]
         base["provider"] = provider.kind
@@ -201,6 +227,7 @@ def create_app(
         await meter.charge(team, cost)
         return result
 
+    app.include_router(build_messages_router(models, providers, current_team, admit, meter))
     app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http))
     tracing.setup(app)
     return app

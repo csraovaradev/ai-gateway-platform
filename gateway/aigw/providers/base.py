@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
@@ -10,7 +11,26 @@ from ..schemas import ChatCompletionRequest
 
 
 class ProviderError(Exception):
-    """An upstream provider failed. Surfaced to clients as 502."""
+    """An upstream provider failed.
+
+    `status` is the HTTP status to answer with: 502 unless the upstream rejected the request.
+    `client_message` is wording that is safe to show the client; without it clients get a generic
+    message and only the audit log sees `str(exc)` (ADR-0005).
+    """
+
+    def __init__(self, message: str, status: int = 502, client_message: str | None = None,
+                 retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.status, self.client_message, self.retry_after = status, client_message, retry_after
+
+
+_ARN = re.compile(r"arn:aws[\w-]*:[^\s\"',]*")
+_ACCOUNT_ID = re.compile(r"\b\d{12}\b")
+
+
+def scrub(message: str) -> str:
+    """Remove ARNs and AWS account IDs from upstream wording before a client sees it."""
+    return _ACCOUNT_ID.sub("<account>", _ARN.sub("<arn>", message))
 
 
 class Provider(Protocol):

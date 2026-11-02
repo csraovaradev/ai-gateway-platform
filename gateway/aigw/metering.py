@@ -15,11 +15,18 @@ from .store import Store
 _GRACE = timedelta(hours=1)  # keep a period's key briefly after it ends, for late charges
 
 
-def cost_usd(model: ModelSpec, prompt_tokens: int | None, completion_tokens: int | None) -> float:
-    if model.price is None:
+def cost_usd(model: ModelSpec, prompt_tokens: int | None, completion_tokens: int | None,
+             cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> float:
+    price = model.price
+    if price is None:
         return 0.0
-    return round((prompt_tokens or 0) * model.price.input_per_mtok / 1e6
-                 + (completion_tokens or 0) * model.price.output_per_mtok / 1e6, 6)
+    write = price.input_per_mtok * 1.25 if price.cache_write_per_mtok is None \
+        else price.cache_write_per_mtok
+    read = price.input_per_mtok * 0.1 if price.cache_read_per_mtok is None \
+        else price.cache_read_per_mtok
+    return round(((prompt_tokens or 0) * price.input_per_mtok
+                  + (completion_tokens or 0) * price.output_per_mtok
+                  + cache_write_tokens * write + cache_read_tokens * read) / 1e6, 6)
 
 
 class Meter:

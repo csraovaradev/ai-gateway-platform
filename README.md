@@ -153,6 +153,37 @@ kubectl --context kind-aigw -n aigw port-forward svc/aigw 8090:8080
 Then call model `mock-via-vault` on `localhost:8090`. That model reads its upstream key from Vault,
 so a 200 proves the pod logged in to Vault with only its service-account identity.
 
+### Use it from Claude Code and Cursor
+
+Developers keep working in their own tools; only the endpoint and key change. The gateway serves the
+Anthropic Messages API (`/v1/messages`) for Claude Code and Anthropic SDKs, next to the OpenAI-compatible
+API ([ADR-0006](docs/adr/0006-anthropic-messages-api.md)). Requests go to Bedrock in Anthropic's own format,
+so tools, extended thinking, and prompt caching work, and every turn lands in the audit log and cost report.
+
+```bash
+cd gateway && make run CONFIG=../policies/gateway.claude-code.example.yaml   # in another terminal
+
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+export ANTHROPIC_AUTH_TOKEN=dev-platform-key          # a gateway key: no Anthropic or AWS key on the laptop
+export ANTHROPIC_MODEL=claude-sonnet-4-5
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5
+export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1       # Bedrock rejects some pre-release betas
+claude
+```
+
+A short Claude Code task through the gateway cost $0.0953 by the gateway's own pricing, the same figure
+Claude Code reported, with its 18K-token system prompt written to the prompt cache once and read after that.
+
+**Cursor:**
+
+- **Tools (MCP):** add the gateway's MCP endpoints to `~/.cursor/mcp.json` (see
+  [`examples/cursor/mcp.json`](examples/cursor/mcp.json)). Cursor then sees only the tools the team's
+  `allowed_tools` permit, and every call is audited. This connects from the laptop, so a local gateway works.
+- **Models:** Cursor can use a custom OpenAI base URL (Settings → Models) pointed at `<gateway>/v1` with a
+  gateway key. Cursor sends those requests from its own servers, so the gateway must be reachable from the
+  internet over HTTPS with real (not demo) keys, and the OpenAI-format path to Bedrock does not yet carry
+  tool calls, so it suits chat rather than agent mode.
+
 ### MCP tool calls
 
 MCP servers listed under `mcp_servers` are reachable at `/mcp/{name}` with the same team keys

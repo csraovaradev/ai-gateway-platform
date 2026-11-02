@@ -1,0 +1,59 @@
+# Example policy for Claude Code (and any Anthropic SDK) through the gateway (ADR-0006).
+#
+# Gateway model names are Anthropic model IDs, so Claude Code recognises them and applies the right
+# capabilities; each maps to the Bedrock inference profile that serves it. Point Claude Code here with:
+#
+#   export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+#   export ANTHROPIC_AUTH_TOKEN=dev-platform-key        # a gateway key, never a provider key
+#   export ANTHROPIC_MODEL=claude-sonnet-4-5
+#   export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5
+#   export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1     # Bedrock rejects some pre-release betas
+#
+# Prices are Anthropic list prices (USD per million tokens); Bedrock is priced separately by AWS.
+
+models:
+  # Models this account can use on Bedrock. Newer ones (Sonnet 5, Opus 5) need extra access from AWS.
+  - name: claude-sonnet-4-5
+    provider: bedrock
+    upstream_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    region: us-west-2
+    timeout_seconds: 600  # long agentic turns with thinking
+    price: {input_per_mtok: 3.00, output_per_mtok: 15.00}
+
+  - name: claude-opus-4-6
+    provider: bedrock
+    upstream_model: us.anthropic.claude-opus-4-6-v1
+    region: us-west-2
+    timeout_seconds: 600
+    price: {input_per_mtok: 5.00, output_per_mtok: 25.00}
+
+  - name: claude-haiku-4-5
+    provider: bedrock
+    upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    region: us-west-2
+    timeout_seconds: 600
+    price: {input_per_mtok: 1.00, output_per_mtok: 5.00}
+
+  - name: mock-echo
+    provider: mock
+
+mcp_servers:
+  - name: jira
+    url: http://127.0.0.1:9000/mcp
+
+teams:
+  - name: platform
+    key_sha256:
+      - 9831e20a4d38b6fdfa34285772c4b88de26d51134c15107cb941d53b70859e63
+    allowed_models: ["*"]
+    allowed_tools: ["*"]
+    requests_per_minute: 120
+    budget: {usd: 10, period: day}
+
+  - name: data
+    key_sha256:
+      - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
+    allowed_models: [claude-haiku-4-5, mock-echo]
+    allowed_tools: ["jira/search", "jira/get_*"]
+    requests_per_minute: 30
+    budget: {usd: 2, period: day}
