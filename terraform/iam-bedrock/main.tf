@@ -73,8 +73,9 @@ resource "aws_iam_role" "bedrock" {
 
 data "aws_iam_policy_document" "bedrock_invoke" {
   statement {
-    sid     = "InvokeModels"
-    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    sid = "InvokeModels"
+    # CountTokens backs /v1/messages/count_tokens (ADR-0006); it reads no data and costs nothing.
+    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:CountTokens"]
     # Cross-region inference profiles (us.*, global.*) route to foundation models in other regions.
     resources = [
       "arn:aws:bedrock:*::foundation-model/*",
