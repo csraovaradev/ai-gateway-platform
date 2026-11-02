@@ -75,3 +75,12 @@ def test_check_command(tmp_path, capsys):
     assert check.main(["--production", str(bad)]) == 1
     assert "not production-ready: store: memory" in capsys.readouterr().out
     assert check.main([str(tmp_path / "missing.yaml")]) == 1
+
+
+def test_production_example_policy_passes_production_checks():
+    from pathlib import Path
+
+    from aigw.config import load_config
+    policy = Path(__file__).resolve().parents[2] / "policies" / "gateway.production.example.yaml"
+    config = load_config(policy)
+    assert config.mode == "production" and config.production_issues() == []

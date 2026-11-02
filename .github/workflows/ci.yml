@@ -34,7 +34,9 @@ jobs:
       - name: Test
         run: pytest -q
       - name: Example policies (production-mode checks)
-        run: for f in ../policies/*.yaml; do python -m aigw.check "$f"; done
+        run: |
+          for f in ../policies/*.yaml; do python -m aigw.check "$f"; done
+          python -m aigw.check --production ../policies/gateway.production.example.yaml
       - name: Build image
         run: docker build -t ai-gateway:${{ github.sha }} .
 
@@ -63,4 +65,6 @@ jobs:
         run: |
           docker compose -f observability/docker-compose.yaml config -q
           docker compose config -q
+          docker compose -f compose.yaml -f compose.full.yaml config -q
+          python3 -m json.tool deploy/local/keycloak/aigw-realm.json > /dev/null
           python3 -m json.tool observability/grafana/dashboards/aigw.json > /dev/null

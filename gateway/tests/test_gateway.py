@@ -179,4 +179,6 @@ def test_config_rejects_unknown_model_reference():
 @pytest.mark.parametrize("policy", sorted(POLICIES.glob("*.yaml")), ids=lambda p: p.name)
 def test_example_policies_are_valid(policy):
     cfg = load_config(policy)
-    assert {m.name for m in cfg.models} >= {"mock-echo"}
+    assert cfg.models and cfg.teams
+    # Every laptop policy offers the credential-free mock; production serves real models only.
+    assert cfg.mode == "production" or "mock-echo" in {m.name for m in cfg.models}

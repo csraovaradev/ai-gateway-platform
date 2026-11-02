@@ -1,0 +1,12 @@
+{
+  "apiKeyHelper": "/usr/local/bin/aigw-login token",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://ai-gateway.example.com",
+    "AIGW_OIDC_ISSUER": "https://login.microsoftonline.com/<tenant-id>/v2.0",
+    "AIGW_OIDC_CLIENT_ID": "<aigw-cli-app-client-id>",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "300000"
+  }
+}

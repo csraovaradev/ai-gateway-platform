@@ -4,7 +4,7 @@
   calls (Amazon Bedrock, OpenAI-compatible servers, MCP servers).
 - **Method:** STRIDE per trust boundary. Each threat lists its mitigation and where it is enforced, or
   marks it as a gap with the work that closes it.
-- **Last reviewed:** 2026-11-01 (Phase 6).
+- **Last reviewed:** 2026-11-02 (sign-in and run modes, ADR-0007 and ADR-0008).
 
 ## Assets
 
@@ -40,13 +40,16 @@
 | STRIDE | Threat | Mitigation | Where |
 |---|---|---|---|
 | Spoofing | Guess or brute-force a team key | 256-bit random keys (`aigw.keys`); only SHA-256 hashes stored; constant-time compare over every entry | `auth.py`, `keys.py` |
-| Spoofing | Reuse another team's MCP session ID | Sessions bound to the opening team; mismatch → 404 | `mcp.py`, ADR-0002 |
+| Spoofing | Forge or tamper with a sign-in token | Signature checked against the IdP's JWKS; `iss`, `aud`, `exp` required; asymmetric algorithms only, so `none` and HS256-with-public-key confusion are impossible | `oidc.py`, ADR-0007 |
+| Spoofing | Use a stolen sign-in token | Access tokens live 15 min (demo realm); revocation happens in the IdP; cached tokens are mode 600 on the laptop | IdP, `aigw-login` |
+| Spoofing | Reuse another team's MCP session ID | Sessions bound to the opening team, and to the user when signed in; mismatch → 404 | `mcp.py`, ADR-0002 |
 | Tampering | Header says one MCP tool, body calls another | Body is authoritative; `Mcp-Method`/`Mcp-Name` mismatch → `-32020` | `mcp.py` |
-| Repudiation | Team denies having made a call | One audit line per request incl. denials and failed auth, with `trace_id` | `audit.py` |
+| Repudiation | Team or person denies having made a call | One audit line per request incl. denials and failed auth, with `trace_id`, and `user` for signed-in requests | `audit.py` |
 | Info disclosure | Upstream error text (AWS ARNs and account ID, Vault paths) returned to clients | **Gap → fixed in Phase 6:** clients get a generic message and `request_id`; detail stays in the audit log. Exception (ADR-0006): on `/v1/messages`, Bedrock `ValidationException` wording passes through with ARNs and account IDs scrubbed, because Claude Code's retries depend on it | `main.py`, `mcp.py`, `messages.py` |
 | Info disclosure | `/metrics` exposes team names and spend | **Gap → fixed in Phase 6:** NetworkPolicy admits only ingress controller and Prometheus; ingress routes only `/v1` and `/mcp` | Helm chart |
 | DoS | Oversized request bodies exhaust memory | **Gap → fixed in Phase 6:** body size limit (default 1 MiB) → 413 | `main.py` |
 | DoS | Request floods, budget burn | Per-team sliding-window rate limit and budgets, shared across replicas | `store.py`, `metering.py` |
+| DoS | Made-up token key IDs flood the IdP with JWKS fetches | Refetch at most every 30 s; cached keys keep working while the IdP is down | `oidc.py` |
 | DoS | Unbounded metric labels from client strings | Labels only from policy values | `metrics.py`, ADR-0004 |
 | Elevation | Call a model or tool outside the team's policy | Allowlists checked before forwarding; `tools/list` filtered; batches rejected | `main.py`, `mcp.py` |
 
@@ -81,11 +84,12 @@
 |---|---|---|---|
 | Tampering | Unreviewed policy change grants access | Policy is code: reviewed in pull requests, validated in CI (every example policy is loaded by tests) | CI |
 | Repudiation | Audit log altered after the fact | **Accepted for now:** stdout logs; in production ship them to append-only storage (CloudWatch Logs with a retention policy, or S3 Object Lock) | deployment |
-| Info disclosure | Public demo keys used outside a laptop | Documented as local-only; production policies are generated with `aigw.keys` | README |
+| Info disclosure | Public demo keys, in-memory limits, or plain-HTTP Vault copied from a laptop policy into production | `mode: production` refuses to start with any of them; CI gates the production policy with `aigw.check --production` | `config.py`, ADR-0008 |
 
 ## Accepted risks
 
 - **Budget overshoot** of at most the requests in flight when a team crosses its budget (ADR-0003).
 - **No content inspection** (PII redaction, prompt-injection filtering). A future policy hook could add it.
-- **API keys do not expire.** Rotation is a policy change today; short-lived keys or OIDC client
-  identity are future work.
+- **API keys do not expire.** People sign in with short-lived tokens instead (ADR-0007); keys remain for
+  services and CI, where rotation is a policy change.
+- **A revoked user's token works until it expires** (up to the IdP's access-token lifetime).

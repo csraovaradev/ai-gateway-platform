@@ -1,0 +1,76 @@
+# Level 3 reference policy (docs/production.md): what a production policy looks like.
+# mode: production refuses to start with laptop-only settings (ADR-0008); CI checks this file with
+#   python -m aigw.check --production policies/gateway.production.example.yaml
+#
+# Replace the <angle-bracket> values for your environment. Nothing here is a secret: the policy holds
+# only key hashes, group names, and addresses.
+
+mode: production
+
+# Single sign-on (ADR-0007). Entra ID shown; for Okta use https://<org>.okta.com/oauth2/default,
+# for Keycloak https://<host>/realms/<realm>.
+oidc:
+  issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+  audience: api://ai-gateway            # the app registration's Application ID URI
+  groups_claim: groups                  # Entra ID sends group object IDs unless configured for names
+  user_claim: preferred_username        # the user's sign-in name in the audit log
+
+# Upstream credentials: Vault in the cluster, reached over TLS, gateway logs in as its service account.
+vault:
+  address: https://vault.vault.svc:8200
+  auth: kubernetes
+  kubernetes_role: aigw
+  jwt_path: /var/run/secrets/vault/token
+  tls:
+    ca_cert: /etc/aigw-tls/vault-ca/ca.crt
+
+# Shared limits, budgets, and MCP sessions across replicas: ElastiCache with TLS.
+store:
+  backend: redis
+  url: rediss://<elasticache-endpoint>:6379/0
+
+models:
+  - name: claude-sonnet-4-5
+    provider: bedrock
+    upstream_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    region: us-west-2
+    vault_path: aws/creds/bedrock
+    timeout_seconds: 600
+    price: {input_per_mtok: 3.00, output_per_mtok: 15.00}
+  - name: claude-haiku-4-5
+    provider: bedrock
+    upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    region: us-west-2
+    vault_path: aws/creds/bedrock
+    timeout_seconds: 600
+    price: {input_per_mtok: 1.00, output_per_mtok: 5.00}
+
+mcp_servers:
+  - name: jira
+    url: http://jira-mcp.mcp.svc:8000/mcp
+    vault_path: secret/data/aigw/mcp/jira     # the server's service token, from Vault KV
+
+teams:
+  # People sign in; group membership in the IdP decides the team. No keys to hand out or rotate.
+  - name: platform
+    oidc_groups: [<eng-platform-group-id>]
+    allowed_models: ["*"]
+    allowed_tools: ["jira/*"]
+    requests_per_minute: 120
+    budget: {usd: 500, period: month}
+
+  - name: data
+    oidc_groups: [<eng-data-group-id>]
+    allowed_models: [claude-haiku-4-5]
+    allowed_tools: ["jira/search", "jira/get_*"]
+    requests_per_minute: 30
+    budget: {usd: 200, period: month}
+
+  # Services and CI jobs keep API keys: generate with `python -m aigw.keys ci`, store the key in the
+  # CI system's secret store, and put only the hash here.
+  - name: ci
+    key_sha256:
+      - d735f92e3d07a84e63d05ce5ed7f868e104469e63573078d10dfcdb12e7d7f23   # placeholder: replace with your own hash
+    allowed_models: [claude-haiku-4-5]
+    requests_per_minute: 30
+    budget: {usd: 50, period: month}
