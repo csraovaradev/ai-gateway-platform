@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Sign in to the AI gateway with your identity provider, like `aws sso login` (ADR-0007).
+
+    aigw-login login     # once per day: opens the browser, you sign in, tokens are cached
+    aigw-login token     # prints a valid access token, refreshing it silently (Claude Code's
+                         # apiKeyHelper runs this)
+    aigw-login whoami    # who the cached token says you are, and when it expires
+    aigw-login logout
+
+Settings, by flag or environment variable:
+    --issuer     AIGW_OIDC_ISSUER     default http://localhost:8180/realms/aigw (level 2 Keycloak)
+    --client-id  AIGW_OIDC_CLIENT_ID  default aigw-cli
+
+Tokens are cached in ~/.aigw/tokens/ (mode 600). Standard library only, so nothing to install.
+Works with any provider that supports the OAuth device flow (Keycloak, Entra ID, Okta, Auth0).
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from pathlib import Path
+from typing import NoReturn
+
+DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+EARLY_REFRESH_SECONDS = 60  # refresh a little before expiry, so a request never races it
+
+
+def fail(message: str) -> NoReturn:
+    print(f"aigw-login: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def web_url(url: str) -> str:
+    # urllib also opens file:// and other schemes; identity provider endpoints are only http(s).
+    if urllib.parse.urlsplit(url).scheme not in ("https", "http"):
+        fail(f"not an http(s) URL: {url}")
+    return url
+
+
+def post(url: str, form: dict[str, str]) -> tuple[int, dict]:
+    req = urllib.request.Request(web_url(url), data=urllib.parse.urlencode(form).encode(),  # noqa: S310
+                                 headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - checked by web_url
+            return resp.status, json.load(resp)
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.load(exc)
+        except ValueError:
+            return exc.code, {}
+    except (urllib.error.URLError, TimeoutError) as exc:
+        fail(f"cannot reach the identity provider at {url}: {exc}")
+
+
+def discover(issuer: str) -> dict:
+    url = web_url(issuer.rstrip("/") + "/.well-known/openid-configuration")
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310 - checked by web_url
+            return json.load(resp)
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        fail(f"cannot read {url}: {exc}")
+
+
+def claims(jwt: str) -> dict:
+    """The token's payload, unverified: only for display and expiry. The gateway verifies it."""
+    payload = jwt.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+class Cache:
+    def __init__(self, issuer: str, client_id: str) -> None:
+        name = hashlib.sha256(f"{issuer}|{client_id}".encode()).hexdigest()[:16]
+        self.path = Path.home() / ".aigw" / "tokens" / f"{name}.json"
+
+    def load(self) -> dict | None:
+        try:
+            return json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def save(self, tokens: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"access_token": tokens["access_token"],
+                       "refresh_token": tokens.get("refresh_token")}, fh)
+        tmp.replace(self.path)
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+def login(args: argparse.Namespace, cache: Cache) -> None:
+    meta = discover(args.issuer)
+    if "device_authorization_endpoint" not in meta:
+        fail("this identity provider does not offer the device flow")
+    status, start = post(meta["device_authorization_endpoint"],
+                         {"client_id": args.client_id, "scope": "openid"})
+    if status != 200:
+        fail(f"device sign-in refused: {start.get('error_description') or start.get('error')}")
+    url = start.get("verification_uri_complete") or start["verification_uri"]
+    print(f"Sign in at:  {url}\nCode:        {start['user_code']}", file=sys.stderr)
+    webbrowser.open(url)
+    interval, deadline = start.get("interval", 5), time.time() + start.get("expires_in", 600)
+    while time.time() < deadline:
+        time.sleep(interval)
+        status, tokens = post(meta["token_endpoint"], {
+            "grant_type": DEVICE_GRANT, "device_code": start["device_code"],
+            "client_id": args.client_id})
+        if status == 200:
+            cache.save(tokens)
+            whoami(args, cache)
+            return
+        error = tokens.get("error")
+        if error == "slow_down":
+            interval += 5
+        elif error != "authorization_pending":
+            fail(f"sign-in failed: {tokens.get('error_description') or error}")
+    fail("sign-in timed out")
+
+
+def token(args: argparse.Namespace, cache: Cache) -> None:
+    cached = cache.load()
+    if not cached:
+        fail("not signed in: run `aigw-login login`")
+    if claims(cached["access_token"]).get("exp", 0) - time.time() > EARLY_REFRESH_SECONDS:
+        print(cached["access_token"])
+        return
+    if not cached.get("refresh_token"):
+        fail("session expired: run `aigw-login login`")
+    meta = discover(args.issuer)
+    status, tokens = post(meta["token_endpoint"], {
+        "grant_type": "refresh_token", "refresh_token": cached["refresh_token"],
+        "client_id": args.client_id})
+    if status != 200:
+        # The sign-in session ended (idle or max lifetime, or an admin revoked it).
+        fail("session expired: run `aigw-login login`")
+    tokens.setdefault("refresh_token", cached["refresh_token"])
+    cache.save(tokens)
+    print(tokens["access_token"])
+
+
+def whoami(args: argparse.Namespace, cache: Cache) -> None:
+    cached = cache.load()
+    if not cached:
+        fail("not signed in: run `aigw-login login`")
+    c = claims(cached["access_token"])
+    user = c.get("preferred_username") or c.get("email") or c.get("sub")
+    left = int(c.get("exp", 0) - time.time())
+    state = f"expires in {left // 60} min" if left > 0 else "expired (refreshes on next use)"
+    print(f"Signed in as {user}, groups {c.get('groups', [])}, token {state}", file=sys.stderr)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="aigw-login", description=__doc__.split("\n")[0])
+    parser.add_argument("command", choices=["login", "token", "whoami", "logout"])
+    parser.add_argument("--issuer", default=os.environ.get(
+        "AIGW_OIDC_ISSUER", "http://localhost:8180/realms/aigw"))
+    parser.add_argument("--client-id", default=os.environ.get("AIGW_OIDC_CLIENT_ID", "aigw-cli"))
+    args = parser.parse_args()
+    cache = Cache(args.issuer, args.client_id)
+    if args.command == "logout":
+        cache.clear()
+        print("Signed out.", file=sys.stderr)
+        return
+    {"login": login, "token": token, "whoami": whoami}[args.command](args, cache)
+
+
+if __name__ == "__main__":
+    main()

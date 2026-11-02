@@ -112,10 +112,15 @@ def build_mcp_router(
                 headers["authorization"] = f"Bearer {token}"
         return headers
 
+    def owner(team: TeamSpec) -> str:
+        # Signed-in users own their sessions; API-key callers share their team's (ADR-0007).
+        user = audit.current_user()
+        return team.name if user is None else f"{team.name}/{user}"
+
     async def session_ok(request: Request, team: TeamSpec) -> bool:
         """A handshake-protocol session may only be used by the team that opened it."""
         sid = request.headers.get("mcp-session-id")
-        return sid is None or await store.get(f"mcp-session:{sid}") == team.name
+        return sid is None or await store.get(f"mcp-session:{sid}") == owner(team)
 
     @router.post("/mcp/{server}", response_model=None)
     async def post(server: str, request: Request,
@@ -186,7 +191,7 @@ def build_mcp_router(
             return _rpc_error(rpc_id, INTERNAL_ERROR, "mcp server unreachable", 502)
 
         if method == "initialize" and (sid := resp.headers.get("mcp-session-id")):
-            await store.set(f"mcp-session:{sid}", team.name, SESSION_TTL_SECONDS)
+            await store.set(f"mcp-session:{sid}", owner(team), SESSION_TTL_SECONDS)
         out_headers = {k: v for k, v in resp.headers.items() if k in RESPONSE_HEADERS}
 
         def finish(status_code: int, tool_error: bool | None = None) -> None:

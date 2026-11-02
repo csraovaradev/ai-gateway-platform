@@ -1,0 +1,66 @@
+# Level 2 policy (docs/getting-started.md): `make local` from the repo root.
+# Every production component, on your laptop: sign-in through Keycloak, upstream credentials from
+# Vault, shared limits in Redis, real Claude models on Bedrock, metrics and traces.
+#
+# Still development mode: the demo keys, Vault token, and Keycloak passwords are public and local-only.
+#   Users (Keycloak, http://localhost:8180): alice (eng-platform), bob (eng-data), carol (no team);
+#   passwords <name>-dev-password. API keys for scripts: dev-platform-key, dev-data-key.
+
+oidc:
+  # Tokens say where they came from; your laptop reaches Keycloak at localhost:8180.
+  issuer: http://localhost:8180/realms/aigw
+  audience: aigw
+  # The gateway container reaches the same Keycloak by its service name.
+  jwks_url: http://keycloak:8080/realms/aigw/protocol/openid-connect/certs
+  user_claim: preferred_username
+
+vault:
+  address: http://vault:8200
+  auth: token               # VAULT_TOKEN, created by scripts/local-setup.sh with only the aigw policy
+
+store:
+  backend: redis
+  url: redis://redis:6379/0
+
+models:
+  - name: mock-echo
+    provider: mock
+
+  # Bedrock with 15-minute STS credentials from Vault (needs terraform/iam-bedrock applied once).
+  - name: claude-sonnet-4-5
+    provider: bedrock
+    upstream_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    region: us-west-2
+    vault_path: aws/creds/bedrock
+    timeout_seconds: 600
+    price: {input_per_mtok: 3.00, output_per_mtok: 15.00}
+  - name: claude-haiku-4-5
+    provider: bedrock
+    upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    region: us-west-2
+    vault_path: aws/creds/bedrock
+    timeout_seconds: 600
+    price: {input_per_mtok: 1.00, output_per_mtok: 5.00}
+
+mcp_servers:
+  - name: jira
+    url: http://jira-mcp:9000/mcp
+
+teams:
+  - name: platform
+    oidc_groups: [eng-platform]
+    key_sha256:
+      - 9831e20a4d38b6fdfa34285772c4b88de26d51134c15107cb941d53b70859e63
+    allowed_models: ["*"]
+    allowed_tools: ["*"]
+    requests_per_minute: 120
+    budget: {usd: 10, period: day}
+
+  - name: data
+    oidc_groups: [eng-data]
+    key_sha256:
+      - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
+    allowed_models: [mock-echo, claude-haiku-4-5]
+    allowed_tools: ["jira/search", "jira/get_*"]
+    requests_per_minute: 20
+    budget: {usd: 2, period: day}

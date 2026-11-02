@@ -28,6 +28,7 @@ from .limits import BodySizeLimit
 from .mcp import build_mcp_router
 from .messages import build_messages_router
 from .metering import Meter, cost_usd
+from .oidc import OidcError, OidcVerifier, looks_like_jwt
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
 from .schemas import ChatCompletionRequest
@@ -55,12 +56,15 @@ def create_app(
     providers: dict[str, Provider] | None = None,
     limiter: RateLimiter | None = None,
     mcp_http: httpx.AsyncClient | None = None,
+    oidc: OidcVerifier | None = None,
 ) -> FastAPI:
     config = config or load_config(os.environ.get("GATEWAY_CONFIG", DEFAULT_CONFIG))
     models = {m.name: m for m in config.models}
     vault = VaultClient(config.vault) if config.vault else None
     providers = providers or {m.name: build_provider(m, vault) for m in config.models}
     authenticator = Authenticator(config.teams)
+    if oidc is None and config.oidc:
+        oidc = OidcVerifier(config.oidc)
     store: Store = (RedisStore(config.store.url, config.store.key_prefix, tls=config.store.tls)
                     if config.store.backend == "redis" else MemoryStore())
     limiter = limiter or RateLimiter(store)
@@ -93,7 +97,8 @@ def create_app(
         # Fail closed: without the store there are no rate limits or budgets.
         return error_response(request, 503, str(exc), "service_unavailable")
 
-    def current_team(request: Request) -> TeamSpec:
+    async def current_team(request: Request) -> TeamSpec:
+        audit.set_user(None)
         # Failed auth is audited too, but never with the presented token.
         denied = {"event": "auth", "path": request.url.path,
                   "client": request.client.host if request.client else None,
@@ -102,13 +107,39 @@ def create_app(
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() != "bearer" or not token:
             token = request.headers.get("x-api-key", "")
-        if not token.strip():
+        token = token.strip()
+        if not token:
             audit.record(**denied, reason="missing_token")
             raise GatewayError(401, "missing api key", "authentication_error")
-        team = authenticator.authenticate(token.strip())
+        if oidc is not None and looks_like_jwt(token):
+            return await signed_in_team(oidc, token, denied)
+        team = authenticator.authenticate(token)
         if team is None:
             audit.record(**denied, reason="invalid_api_key")
             raise GatewayError(401, "invalid api key", "authentication_error")
+        return team
+
+    async def signed_in_team(verifier: OidcVerifier, token: str,
+                             denied: dict[str, Any]) -> TeamSpec:
+        """A user signed in with the identity provider acts as the team their groups map to."""
+        try:
+            claims = await verifier.verify(token)
+        except OidcError as exc:
+            if exc.reason == "jwks_unavailable":
+                audit.record(**{**denied, "http_status": 503}, reason=exc.reason)
+                raise GatewayError(503, "identity provider unavailable",
+                                   "service_unavailable") from exc
+            audit.record(**denied, reason=exc.reason)
+            # Claude Code reruns its apiKeyHelper on 401, which refreshes an expired token.
+            raise GatewayError(401, f"sign-in token rejected: {exc.reason}",
+                               "authentication_error") from exc
+        user, groups = verifier.user(claims), verifier.groups(claims)
+        audit.set_user(user)
+        team = next((t for t in config.teams if groups & set(t.oidc_groups)), None)
+        if team is None:
+            audit.record(**{**denied, "http_status": 403}, reason="no_team_for_groups")
+            raise GatewayError(403, "signed in, but none of your groups grants gateway access",
+                               "permission_error")
         return team
 
     @app.get("/healthz")

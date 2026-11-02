@@ -1,0 +1,83 @@
+# Level 2: every production component on your laptop (docs/getting-started.md).
+# Layered on compose.yaml, so the gateway and demo MCP server are the same containers as level 1.
+#
+#   make local          # = docker compose -f compose.yaml -f compose.full.yaml up -d --build
+#                       #   + scripts/local-setup.sh (Vault: policy, gateway token, Bedrock creds)
+#
+# Keycloak http://localhost:8180 (admin/admin)   Vault http://127.0.0.1:8200 (token: root)
+# Grafana  http://127.0.0.1:3000                 Prometheus :9090   Jaeger :16686
+# All passwords and tokens here are public and local-only, like the demo keys.
+
+services:
+  gateway:
+    volumes:
+      - ./policies/gateway.local.yaml:/etc/aigw/gateway.yaml:ro
+    environment:
+      # Fixed ID so the container can start before Vault is configured; created by local-setup.sh
+      # with only the aigw policy. Production uses Kubernetes auth instead (ADR-0008).
+      VAULT_TOKEN: aigw-local-gateway-token
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: aigw
+    depends_on: [jira-mcp, redis, vault, keycloak]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Tokens always say iss=http://localhost:8180/realms/aigw, however Keycloak was reached;
+      # the gateway fetches signing keys over the container network (backchannel).
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./deploy/local/keycloak:/opt/keycloak/data/import:ro
+    ports: ["127.0.0.1:8180:8080"]
+
+  vault:
+    image: hashicorp/vault:2.2.1
+    command: ["server", "-dev", "-dev-root-token-id=root", "-dev-listen-address=0.0.0.0:8200"]
+    cap_add: [IPC_LOCK]
+    ports: ["127.0.0.1:8200:8200"]
+
+  redis:
+    image: redis:7.4-alpine
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    configs:
+      - source: prometheus
+        target: /etc/prometheus/prometheus.yml
+    volumes:
+      - ./observability/prometheus:/etc/prometheus/rules:ro
+    ports: ["127.0.0.1:9090:9090"]
+
+  jaeger:
+    image: jaegertracing/jaeger:2.1.0
+    ports: ["127.0.0.1:16686:16686"]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/aigw.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus, jaeger]
+
+configs:
+  prometheus:
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+      rule_files:
+        - /etc/prometheus/rules/rules.yaml
+      scrape_configs:
+        - job_name: aigw
+          static_configs:
+            - targets: ["gateway:8080"]
