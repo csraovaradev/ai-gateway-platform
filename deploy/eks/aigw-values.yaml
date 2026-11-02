@@ -45,6 +45,21 @@ policy:
       region: __REGION__
       vault_path: aws/creds/bedrock
       price: { input_per_mtok: 1.00, output_per_mtok: 5.00 }
+    # Anthropic Messages API for Claude Code (ADR-0006), same Vault-issued Bedrock credentials.
+    - name: claude-sonnet-4-5
+      provider: bedrock
+      upstream_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      region: __REGION__
+      vault_path: aws/creds/bedrock
+      timeout_seconds: 600
+      price: { input_per_mtok: 3.00, output_per_mtok: 15.00 }
+    - name: claude-haiku-4-5
+      provider: bedrock
+      upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+      region: __REGION__
+      vault_path: aws/creds/bedrock
+      timeout_seconds: 600
+      price: { input_per_mtok: 1.00, output_per_mtok: 5.00 }
 
   teams:
     - name: platform
@@ -55,6 +70,6 @@ policy:
     - name: data
       key_sha256:
         - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
-      allowed_models: [mock-echo, bedrock-claude]
+      allowed_models: [mock-echo, bedrock-claude, claude-haiku-4-5]
       requests_per_minute: 10
       budget: { usd: 1, period: day }
