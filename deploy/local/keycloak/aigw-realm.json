@@ -1,6 +1,6 @@
 {
   "realm": "aigw",
-  "displayName": "AI Gateway (local demo)",
+  "displayName": "AI Gateway",
   "enabled": true,
   "accessTokenLifespan": 900,
   "ssoSessionIdleTimeout": 28800,
@@ -8,53 +8,109 @@
   "oauth2DeviceCodeLifespan": 600,
   "oauth2DevicePollingInterval": 5,
   "groups": [
-    {"name": "eng-platform"},
-    {"name": "eng-data"}
+    {
+      "name": "eng-platform"
+    },
+    {
+      "name": "eng-data"
+    }
   ],
   "users": [
     {
-      "username": "alice", "enabled": true, "emailVerified": true,
-      "email": "alice@example.com", "firstName": "Alice", "lastName": "Platform",
-      "credentials": [{"type": "password", "value": "alice-dev-password", "temporary": false}],
-      "groups": ["/eng-platform"]
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@example.com",
+      "firstName": "Alice",
+      "lastName": "Platform",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-dev-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/eng-platform"
+      ]
     },
     {
-      "username": "bob", "enabled": true, "emailVerified": true,
-      "email": "bob@example.com", "firstName": "Bob", "lastName": "Data",
-      "credentials": [{"type": "password", "value": "bob-dev-password", "temporary": false}],
-      "groups": ["/eng-data"]
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@example.com",
+      "firstName": "Bob",
+      "lastName": "Data",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob-dev-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/eng-data"
+      ]
     },
     {
-      "username": "carol", "enabled": true, "emailVerified": true,
-      "email": "carol@example.com", "firstName": "Carol", "lastName": "Sales",
-      "credentials": [{"type": "password", "value": "carol-dev-password", "temporary": false}],
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "carol@example.com",
+      "firstName": "Carol",
+      "lastName": "Sales",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "carol-dev-password",
+          "temporary": false
+        }
+      ],
       "groups": []
     }
   ],
   "clients": [
     {
       "clientId": "aigw-cli",
-      "name": "AI Gateway CLI (Claude Code apiKeyHelper)",
+      "name": "AI Gateway CLI",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
-      "attributes": {"oauth2.device.authorization.grant.enabled": "true"},
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true"
+      },
       "protocolMappers": [
         {
-          "name": "groups", "protocol": "openid-connect",
+          "name": "groups",
+          "protocol": "openid-connect",
           "protocolMapper": "oidc-group-membership-mapper",
-          "config": {"claim.name": "groups", "full.path": "false", "access.token.claim": "true",
-                     "id.token.claim": "false", "userinfo.token.claim": "false"}
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
         },
         {
-          "name": "aigw-audience", "protocol": "openid-connect",
+          "name": "aigw-audience",
+          "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
-          "config": {"included.custom.audience": "aigw", "access.token.claim": "true",
-                     "id.token.claim": "false"}
+          "config": {
+            "included.custom.audience": "aigw",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
         }
-      ]
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "profile"
+      ],
+      "optionalClientScopes": []
     }
-  ]
+  ],
+  "loginTheme": "aigw"
 }

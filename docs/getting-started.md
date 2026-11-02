@@ -80,9 +80,14 @@ alice (group eng-platform → team platform), bob (eng-data → team data), caro
 Passwords are `<name>-dev-password`.
 
 ```bash
-scripts/aigw-login login     # opens the browser; sign in as alice
+scripts/aigw-login login     # opens the branded sign-in page; sign in as alice
 scripts/aigw-login whoami    # Signed in as alice, groups ['eng-platform'], token expires in 14 min
 ```
+
+The sign-in, consent, and "you're signed in" pages use a custom Keycloak theme
+([`deploy/local/keycloak/themes/aigw`](../deploy/local/keycloak/themes/aigw)): layout, copy, and styles
+only, on top of Keycloak's own templates, so MFA, errors, and device codes keep working. The token
+carries only what the gateway reads: user ID, username, groups, and audience.
 
 **Use Claude Code with your sign-in**, not a shared key. The settings file sets the gateway URL and makes
 `aigw-login token` Claude Code's `apiKeyHelper`. Claude Code reruns it every 5 minutes and on any 401,

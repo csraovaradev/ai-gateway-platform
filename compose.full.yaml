@@ -31,7 +31,8 @@ services:
       KC_HOSTNAME: http://localhost:8180
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     volumes:
-      - ./deploy/local/keycloak:/opt/keycloak/data/import:ro
+      - ./deploy/local/keycloak/aigw-realm.json:/opt/keycloak/data/import/aigw-realm.json:ro
+      - ./deploy/local/keycloak/themes/aigw:/opt/keycloak/themes/aigw:ro   # branded sign-in pages
     ports: ["127.0.0.1:8180:8080"]
 
   vault:
