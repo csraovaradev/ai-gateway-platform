@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Guided demo of the gateway running on EKS. Press Enter between scenes.
+#   scripts/demo-eks.sh            # interactive
+#   DEMO_NO_PAUSE=1 scripts/demo-eks.sh
+# Needs the cluster from terraform/eks, deployed with scripts/eks-deploy.sh.
+set -euo pipefail
+
+CONTEXT="aigw-eks"
+INIT_FILE="$HOME/.aigw/vault-init-aigw.json"
+GW="http://aigw.aigw.svc:8080"
+bold=$'\e[1m'; dim=$'\e[2m'; green=$'\e[32m'; reset=$'\e[0m'
+
+k() { kubectl --context "$CONTEXT" "$@"; }
+scene() { printf '\n%s━━ %s ━━%s\n' "$bold" "$1" "$reset"; }
+say() { printf '%s%s%s\n' "$dim" "$1" "$reset"; }
+run() { printf '%s$ %s%s\n' "$green" "$1" "$reset"; }
+pause() { [ -n "${DEMO_NO_PAUSE:-}" ] || read -r -p $'\n[Enter for the next scene] ' _; }
+# Requests come from a pod in the api-clients namespace, the only one the NetworkPolicy lets in.
+client() { k -n api-clients exec demo-client -- "$@"; }
+chat() {  # key model [stream]
+  client curl -s -m 30 "$GW/v1/chat/completions" -H "Authorization: Bearer $1" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$2\",\"max_tokens\":40,\"stream\":${3:-false},\"messages\":[{\"role\":\"user\",\"content\":\"In one short sentence, what does an AI gateway do?\"}]}"
+}
+
+k -n api-clients get pod demo-client >/dev/null 2>&1 || {
+  k -n api-clients run demo-client --image=curlimages/curl:8.11.1 --restart=Never \
+    --command -- sleep 3600 >/dev/null
+  k -n api-clients wait --for=condition=Ready pod/demo-client --timeout=60s >/dev/null
+}
+
+scene "1. What is running"
+say "Two gateway replicas, one Vault, on two Graviton Spot nodes. Redis is ElastiCache, outside the cluster."
+run "kubectl get pods -n aigw / -n vault"
+k get pods -n aigw -o wide --no-headers | awk '{print "  aigw   " $1, $3, $7}'
+k get pods -n vault -o wide --no-headers | awk '{print "  vault  " $1, $3, $7}'
+pause
+
+scene "2. A chat request through the gateway"
+say "OpenAI-compatible API. 'mock-echo' needs no cloud; 'bedrock-claude' is Claude Haiku 4.5 on Bedrock."
+run "POST /v1/chat/completions  model=bedrock-claude  key=dev-platform-key"
+chat dev-platform-key bedrock-claude | python3 -c "
+import sys, json; r = json.load(sys.stdin)
+print('  answer:', r['choices'][0]['message']['content'])
+print('  usage :', r['usage'])"
+say "Streaming works the same way, as server-sent events:"
+chat dev-platform-key bedrock-claude true | grep -c '^data:' | sed 's/^/  SSE events received: /'
+pause
+
+scene "3. Policy says no"
+for case in "not-a-real-key mock-echo|bad API key" "dev-platform-key gpt-9000|unknown model"; do
+  IFS='|' read -r args label <<<"$case"
+  # shellcheck disable=SC2086
+  printf '  %-15s -> %s\n' "$label" "$(chat $args | python3 -c 'import sys,json; e=json.load(sys.stdin)["error"]; print(e["type"] + ": " + e["message"])')"
+done
+say "Every one of these is still written to the audit log, with the reason."
+pause
+
+scene "4. Where do the AWS credentials come from?"
+say "The gateway pods hold no AWS keys and no Vault token. Look:"
+P="$(k -n aigw get pods -l app.kubernetes.io/name=aigw -o name | head -1)"
+run "kubectl exec $P -- env | grep -E 'AWS_|VAULT_TOKEN'"
+printf '  matching variables: %s\n' "$(k -n aigw exec "$P" -- sh -c 'env | grep -cE "^(AWS_|VAULT_TOKEN)" || true')"
+say "The pod proves who it is to Vault with a 10-minute token meant only for Vault:"
+k -n aigw exec "$P" -- python -c "
+import base64, json
+p = open('/var/run/secrets/vault/token').read().split('.')[1]; p += '=' * (-len(p) % 4)
+c = json.loads(base64.urlsafe_b64decode(p))
+print('  audience:', c['aud'], '| subject:', c['sub'], '| lifetime:', c['exp'] - c['iat'], 's')"
+say "Vault itself has no AWS key either: it uses IRSA, the cluster's identity, to call AWS."
+say "Here is a credential Vault hands out, and who AWS thinks it is:"
+TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["root_token"])' "$INIT_FILE")"
+LEASE="$(k -n vault exec vault-0 -- env VAULT_TOKEN="$TOKEN" vault read -format=json aws/creds/bedrock)"
+read -r AKID SECRET SESSION TTL < <(python3 -c '
+import json, sys; d = json.loads(sys.stdin.read())
+print(d["data"]["access_key"], d["data"]["secret_key"], d["data"]["security_token"], d["lease_duration"])' <<<"$LEASE")
+printf '  key starts with %s (ASIA = temporary STS key), valid %ss\n' "${AKID:0:4}" "$TTL"
+printf '  AWS sees: %s\n' "$(AWS_ACCESS_KEY_ID="$AKID" AWS_SECRET_ACCESS_KEY="$SECRET" AWS_SESSION_TOKEN="$SESSION" \
+  aws sts get-caller-identity --query Arn --output text | sed -E 's/[0-9]{12}/<account>/')"
+# Capture first: with pipefail, `aws ... | grep` would report aws's failure, not grep's match.
+s3="$(AWS_ACCESS_KEY_ID="$AKID" AWS_SECRET_ACCESS_KEY="$SECRET" AWS_SESSION_TOKEN="$SESSION" \
+  aws s3 ls 2>&1 || true)"
+printf '  can it list S3 buckets? %s\n' \
+  "$(grep -q AccessDenied <<<"$s3" && echo 'no (AccessDenied): Bedrock only' || echo "yes: $s3")"
+unset AKID SECRET SESSION LEASE TOKEN
+pause
+
+scene "5. Rate limits shared by both replicas"
+say "The data team may send 10 requests a minute. 12 requests, load-balanced over 2 pods:"
+codes="$(client sh -c "for i in \$(seq 1 12); do curl -s -o /dev/null -w '%{http_code} ' -m 10 $GW/v1/chat/completions \
+  -H 'Authorization: Bearer dev-data-key' -H 'Content-Type: application/json' \
+  -d '{\"model\":\"mock-echo\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'; done")"
+echo "  $codes"
+say "Both pods count in the same ElastiCache Redis (over TLS), so the limit holds across replicas."
+say "(If you ran this scene less than a minute ago, the 429s start earlier.)"
+pause
+
+scene "6. The audit log and who spent what"
+say "One JSON line per request, never the prompt or answer. Here is one:"
+k -n aigw logs "$P" | grep '"model":"bedrock-claude"' | tail -1 | python3 -m json.tool | sed 's/^/  /'
+say "And spend per team, built from both replicas' audit logs:"
+{ for p in $(k -n aigw get pods -l app.kubernetes.io/name=aigw -o name); do k -n aigw logs "$p"; done; } \
+  | k -n aigw exec -i "$P" -- python -m aigw.report | sed 's/^/  /'
+pause
+
+scene "7. Network isolation"
+k create namespace outsider --dry-run=client -o yaml | k apply -f - >/dev/null
+for ns in api-clients outsider; do
+  code="$(k -n "$ns" run "probe-$RANDOM" --rm -i --restart=Never --quiet --image=curlimages/curl:8.11.1 \
+    --command -- curl -s -m 5 -o /dev/null -w '%{http_code}' "$GW/healthz" 2>/dev/null || true)"
+  printf '  from %-12s -> %s\n' "$ns" "$([ "$code" = 200 ] && echo 'allowed (200)' || echo 'blocked: connection dropped')"
+done
+say "The NetworkPolicy admits only the API-client and monitoring namespaces; the VPC CNI enforces it."
+pause
+
+scene "8. Vault restarts and unseals itself"
+say "Deleting the Vault pod. With KMS auto-unseal nobody has to type unseal keys."
+run "kubectl delete pod vault-0 -n vault"
+k -n vault delete pod vault-0 --wait=true >/dev/null
+k -n vault wait --for=condition=Ready pod/vault-0 --timeout=180s >/dev/null
+k -n vault exec vault-0 -- vault status -format=json | python3 -c "
+import sys, json; d = json.load(sys.stdin); print(f\"  back up: sealed={d['sealed']}, seal type={d['type']}\")"
+say "The gateway kept its cached 15-minute credentials, so requests never stopped."
+chat dev-platform-key mock-echo >/dev/null && echo "  gateway still answering: yes"
+
+k -n api-clients delete pod demo-client --wait=false >/dev/null 2>&1 || true
+printf '\n%sDemo done.%s Remember: terraform -chdir=terraform/eks destroy when you are finished (~0.18 USD/h).\n' \
+  "$bold" "$reset"
