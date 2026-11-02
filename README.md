@@ -2,7 +2,13 @@
 
 [![CI](https://github.com/csraovaradev/ai-gateway-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/csraovaradev/ai-gateway-platform/actions/workflows/ci.yml)
 
-A self-hosted, Kubernetes-native gateway for AI workloads: one front door for **LLM calls** and **MCP tool calls**, with **no long-lived secrets**, per-team policy, and full audit.
+**Open-source guardrails for enterprise AI.** A self-hosted, Kubernetes-native gateway that gives every
+**LLM call** and **MCP tool call** one governed front door: single sign-on, per-team model and tool
+policy, spend limits, and a full audit trail, with **no long-lived secrets** anywhere.
+
+Developers keep the tools they already use (Claude Code, Cursor, the OpenAI and Anthropic SDKs). The
+platform team decides who may use which model and which tool, what it may cost, and gets a record of
+every request, without storing prompts.
 
 > **Status:** all roadmap phases are built and verified on a laptop and on Amazon EKS. What a
 > production rollout still needs is in [docs/production.md](docs/production.md).
@@ -117,6 +123,12 @@ Key choices are recorded as ADRs in [`docs/adr/`](docs/adr/):
 - [0006](docs/adr/0006-anthropic-messages-api.md) Anthropic Messages API for Claude Code
 - [0007](docs/adr/0007-user-identity-oidc.md) User identity through the company identity provider
 - [0008](docs/adr/0008-run-modes.md) Development and production run modes
+
+## Contributing and security
+
+Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Please report security
+problems privately, as described in [SECURITY.md](SECURITY.md). Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
