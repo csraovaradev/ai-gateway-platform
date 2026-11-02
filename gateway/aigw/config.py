@@ -12,6 +12,13 @@ from pydantic import BaseModel, Field, model_validator
 from .tls import TLSSpec
 
 ProviderKind = Literal["mock", "openai_compat", "bedrock"]
+# Asymmetric only: the verification keys come from a public JWKS, so HS* and "none" never apply.
+JwtAlgorithm = Literal["RS256", "RS384", "RS512", "PS256", "ES256", "ES384"]
+# SHA-256 of the public demo keys `dev-platform-key` and `dev-data-key` (README).
+DEMO_KEY_HASHES = frozenset({
+    "9831e20a4d38b6fdfa34285772c4b88de26d51134c15107cb941d53b70859e63",
+    "33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1",
+})
 
 
 class VaultSpec(BaseModel):
@@ -31,6 +38,24 @@ class VaultSpec(BaseModel):
         if self.auth == "kubernetes" and not self.kubernetes_role:
             raise ValueError("vault: kubernetes auth requires kubernetes_role")
         return self
+
+
+class OidcSpec(BaseModel):
+    """Users sign in with the company identity provider; the gateway checks its tokens
+    (ADR-0007)."""
+
+    issuer: str  # must equal the token's `iss` exactly, e.g. https://login.example.com/realms/aigw
+    audience: str  # the token's `aud` must include this
+    # Where the signing keys are. Default: `jwks_uri` from the issuer's discovery document.
+    # Set it when the gateway reaches the identity provider by another name (containers, clusters).
+    jwks_url: str | None = None
+    groups_claim: str = "groups"  # list of group names (or IDs, in Entra ID) mapped to teams
+    user_claim: str = "sub"  # recorded as `user` in the audit log
+    algorithms: list[JwtAlgorithm] = Field(default_factory=lambda: ["RS256"], min_length=1)
+    leeway_seconds: int = Field(default=30, ge=0, le=300)  # clock skew allowed on exp/nbf/iat
+    jwks_cache_seconds: int = Field(default=300, gt=0)
+    timeout_seconds: float = 10.0
+    tls: TLSSpec = Field(default_factory=TLSSpec)
 
 
 class Price(BaseModel):
@@ -101,15 +126,25 @@ class McpServerSpec(BaseModel):
 
 
 class TeamSpec(BaseModel):
-    """A team that calls the gateway. Keys are stored only as SHA-256 hashes."""
+    """A team that calls the gateway, with API keys (stored only as SHA-256 hashes), identity
+    provider groups, or both."""
 
     name: str
-    key_sha256: list[str] = Field(min_length=1)
+    key_sha256: list[str] = Field(default_factory=list)
+    # Signed-in users whose token lists one of these groups act as this team. A user in groups of
+    # several teams gets the first such team in this file.
+    oidc_groups: list[str] = Field(default_factory=list)
     allowed_models: list[str] = Field(default_factory=lambda: ["*"])
     # MCP tools as `server/tool` glob patterns, e.g. "jira/get_*". Empty means no MCP access.
     allowed_tools: list[str] = Field(default_factory=list)
     requests_per_minute: int = Field(default=60, gt=0)
     budget: Budget | None = None
+
+    @model_validator(mode="after")
+    def _check_identity(self) -> TeamSpec:
+        if not self.key_sha256 and not self.oidc_groups:
+            raise ValueError(f"team {self.name!r} needs key_sha256 or oidc_groups")
+        return self
 
     def allows(self, model: str) -> bool:
         return "*" in self.allowed_models or model in self.allowed_models
@@ -122,6 +157,9 @@ class TeamSpec(BaseModel):
 
 
 class GatewayConfig(BaseModel):
+    # production refuses to start with settings that are only safe on a laptop (ADR-0008).
+    mode: Literal["development", "production"] = "development"
+    oidc: OidcSpec | None = None
     vault: VaultSpec | None = None
     store: StoreSpec = Field(default_factory=StoreSpec)
     models: list[ModelSpec]
@@ -148,6 +186,9 @@ class GatewayConfig(BaseModel):
             unknown = [m for m in team.allowed_models if m != "*" and m not in known]
             if unknown:
                 raise ValueError(f"team {team.name!r} allows unknown models: {unknown}")
+        sso_teams = [t.name for t in self.teams if t.oidc_groups]
+        if sso_teams and self.oidc is None:
+            raise ValueError(f"teams {sso_teams} use oidc_groups but no oidc section is set")
         servers = [s.name for s in self.mcp_servers]
         if len(servers) != len(set(servers)):
             raise ValueError("mcp server names must be unique")
@@ -159,7 +200,32 @@ class GatewayConfig(BaseModel):
                         f"team {team.name!r}: tool pattern {pattern!r} needs server/tool")
                 if not any(fnmatchcase(s, prefix) for s in servers):
                     raise ValueError(f"team {team.name!r}: {pattern!r} matches no mcp server")
+        if self.mode == "production" and (issues := self.production_issues()):
+            raise ValueError("not safe for mode: production:\n  - " + "\n  - ".join(issues))
         return self
+
+    def production_issues(self) -> list[str]:
+        """Settings that are fine on a laptop but must not reach a shared environment."""
+        issues = []
+        demo = [t.name for t in self.teams if DEMO_KEY_HASHES & {h.lower() for h in t.key_sha256}]
+        if demo:
+            issues.append(f"teams {demo} use the public demo keys; generate keys with "
+                          "`python -m aigw.keys <team>`")
+        if self.store.backend == "memory":
+            issues.append("store: memory keeps rate limits and budgets per process; use redis")
+        elif not self.store.url.startswith("rediss://"):
+            issues.append("store: use rediss:// so limits and spend travel over TLS")
+        if self.vault is not None:
+            if not self.vault.address.startswith("https://"):
+                issues.append("vault: address must be https://")
+            if self.vault.auth == "token":
+                issues.append("vault: token auth needs a long-lived token; use kubernetes auth")
+        if self.oidc is not None and not self.oidc.issuer.startswith("https://"):
+            issues.append("oidc: issuer must be https://")
+        static = [m.name for m in self.models if m.api_key_env]
+        if static:
+            issues.append(f"models {static} read upstream keys from env vars; use vault_path")
+        return issues
 
 
 def load_config(path: str | Path) -> GatewayConfig:

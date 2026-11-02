@@ -4,6 +4,8 @@
     python examples/mcp-demo/server.py
 """
 
+import os
+
 from mcp.server.mcpserver import MCPServer
 
 ISSUES = {"OPS-1": "Gateway returns 502 when Vault is sealed", "OPS-2": "Add MCP audit dashboard"}
@@ -30,4 +32,5 @@ def delete_issue(key: str) -> str:
 
 
 if __name__ == "__main__":
-    server.run("streamable-http", host="127.0.0.1", port=9000)
+    # MCP_HOST=0.0.0.0 in the container image; loopback only when run on your machine.
+    server.run("streamable-http", host=os.environ.get("MCP_HOST", "127.0.0.1"), port=9000)

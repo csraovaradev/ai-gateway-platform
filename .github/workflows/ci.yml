@@ -33,6 +33,8 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest -q
+      - name: Example policies (production-mode checks)
+        run: for f in ../policies/*.yaml; do python -m aigw.check "$f"; done
       - name: Build image
         run: docker build -t ai-gateway:${{ github.sha }} .
 
@@ -60,4 +62,5 @@ jobs:
       - name: Observability compose file and dashboard
         run: |
           docker compose -f observability/docker-compose.yaml config -q
+          docker compose config -q
           python3 -m json.tool observability/grafana/dashboards/aigw.json > /dev/null

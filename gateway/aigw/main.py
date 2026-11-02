@@ -7,6 +7,7 @@ Run locally:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -34,6 +35,7 @@ from .store import MemoryStore, RedisStore, Store, StoreError
 from .vault import VaultClient
 
 DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
+log = logging.getLogger("aigw")
 UPSTREAM_ERROR = "upstream provider error; see request_id in the gateway audit log"
 # Gateway error kinds in Anthropic's vocabulary, by (status, kind) or kind.
 ANTHROPIC_ERROR_TYPES = {
@@ -63,6 +65,10 @@ def create_app(
                     if config.store.backend == "redis" else MemoryStore())
     limiter = limiter or RateLimiter(store)
     meter = Meter(store)
+    if config.mode == "development" and (issues := config.production_issues()):
+        # Development mode starts anyway, but says what production mode would refuse (ADR-0008).
+        log.warning("aigw: development mode; not for shared environments:\n  - %s",
+                    "\n  - ".join(issues))
 
     app = FastAPI(title="AI Gateway", version="0.1.0")
     app.add_middleware(BodySizeLimit, max_bytes=config.max_request_bytes,
