@@ -30,7 +30,8 @@ A single gateway, run as a platform service on EKS:
 
 | Plane | What it does |
 |---|---|
-| **LLM gateway** | OpenAI-compatible endpoint that routes to Amazon Bedrock, hosted providers, or self-hosted models (vLLM). Handles streaming, fallback, and model allowlists. |
+| **Identity** | Single sign-on through any OIDC identity provider (Entra ID, Okta, Keycloak). Groups map to teams, and every request is attributed to a person. |
+| **LLM gateway** | OpenAI-compatible and Anthropic Messages endpoints, so Claude Code, Cursor, and the SDKs work unchanged. Routes to Amazon Bedrock, OpenAI-compatible servers (vLLM, Ollama), or a mock, with streaming and per-team model allowlists. |
 | **MCP gateway** | Fronts upstream MCP servers. Clients connect once; the gateway enforces per-team tool allowlists and logs every tool call. |
 | **Credential broker** | HashiCorp Vault issues **short-lived, scoped credentials** per request. Gateway pods authenticate to Vault with their Kubernetes service account, so no provider keys live in the cluster. |
 | **Policy & metering** | Per-team rate limits, token budgets, and cost attribution. |
@@ -62,6 +63,7 @@ One gateway image and one policy format, three ways to run it
 | **3. Production** | Terraform + `scripts/eks-deploy.sh` | An AWS account | EKS, Vault with KMS auto-unseal and IRSA, ElastiCache, NetworkPolicy; `mode: production` policies |
 
 ```bash
+git clone https://github.com/csraovaradev/ai-gateway-platform.git && cd ai-gateway-platform
 make quickstart                     # http://127.0.0.1:8080 (AIGW_PORT=8081 make quickstart if taken)
 
 curl -s http://127.0.0.1:8080/v1/chat/completions -H "Authorization: Bearer dev-platform-key" \
@@ -73,6 +75,7 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_AUTH_TOKEN=dev-platform-key \
   ANTHROPIC_MODEL=mock-echo ANTHROPIC_DEFAULT_HAIKU_MODEL=mock-echo claude
 ```
 
+Clone under your home directory: Docker Desktop and Colima share only that with containers by default.
 `dev-platform-key` and `dev-data-key` are public demo keys, for your laptop only. A policy with
 `mode: production` refuses to start with them, or with any other laptop-only setting
 ([ADR-0008](docs/adr/0008-run-modes.md)); check a policy with `python -m aigw.check --production`.
@@ -85,6 +88,24 @@ At level 2 developers sign in instead of sharing keys: `scripts/aigw-login login
 then Claude Code gets fresh 15-minute tokens on its own through `apiKeyHelper`
 ([ADR-0007](docs/adr/0007-user-identity-oidc.md)). Recipes for each feature from source are in
 [docs/guides.md](docs/guides.md).
+
+## Verified end to end
+
+Not just written, run: on a laptop, in kind, and on Amazon EKS against Claude models on Bedrock.
+
+- **Claude Code through the gateway on EKS:** tools, streaming, extended thinking, and prompt caching
+  work, and the gateway's cost for the session matched Claude Code's own figure to the cent.
+- **Least privilege for agents:** Claude Code running as the data team never sees `delete_issue`; a
+  call to it is refused at the gateway and never reaches the MCP server.
+- **No AWS access key anywhere on EKS:** the gateway logs in to Vault with its service account, Vault
+  assumes a Bedrock-only role through IRSA, and credentials live 15 minutes. Vault auto-unseals with KMS,
+  and came back on its own when AWS reclaimed both Spot nodes mid-test.
+- **Signed-in users, not shared keys:** every audit line names the person, and a token that is edited,
+  expired, or for another app is refused.
+- **Failure modes tested:** Vault down, hung upstreams, leaky upstream errors, oversized bodies, and a
+  laptop sleeping past its credentials' lifetime (found live, fixed, and now a test).
+- **CI on every push:** 141 tests, lint, a production-mode check of the example policies, Terraform
+  validate, Helm lint, ShellCheck, Prometheus rule checks, and the Docker build.
 
 ## Repository layout
 

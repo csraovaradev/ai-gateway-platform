@@ -132,6 +132,18 @@ people in through your identity provider and passes `python -m aigw.check --prod
 production rollout needs (DNS and TLS at the edge, SSO, managed Claude Code settings, enforcement) is in
 [production.md](production.md).
 
+## Troubleshooting
+
+- **The gateway keeps restarting with `IsADirectoryError: /etc/aigw/gateway.yaml`:** Docker cannot see
+  the folder you cloned into, so it mounted an empty directory instead of the policy file. Docker Desktop
+  and Colima share only your home directory by default; clone there (or add the folder to Docker's file
+  sharing settings).
+- **Port 8080 is taken:** prefix commands with `AIGW_PORT=8081`.
+- **`claude-*` models return 502 at level 2:** Vault has no AWS credentials yet. Apply
+  `terraform/iam-bedrock` once, then run `make local-setup`.
+- **`aigw-login token` says the session expired:** run `scripts/aigw-login login` again. Level 2's Vault
+  and Keycloak keep everything in memory, so restarting the stack signs everyone out.
+
 ## Clean up
 
 ```bash
