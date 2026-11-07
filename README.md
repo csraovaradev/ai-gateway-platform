@@ -31,7 +31,7 @@ A single gateway, run as a platform service on EKS:
 | Plane | What it does |
 |---|---|
 | **Identity** | Single sign-on through any OIDC identity provider (Entra ID, Okta, Keycloak). Groups map to teams, and every request is attributed to a person. |
-| **LLM gateway** | OpenAI-compatible and Anthropic Messages endpoints, so Claude Code, Cursor, and the SDKs work unchanged. Routes to Amazon Bedrock, OpenAI-compatible servers (vLLM, Ollama), or a mock, with streaming and per-team model allowlists. |
+| **LLM gateway** | OpenAI-compatible and Anthropic Messages endpoints, so Claude Code, Cursor, and the SDKs work unchanged. Routes to Amazon Bedrock, OpenAI-compatible servers (vLLM, Ollama), or a mock, with streaming, per-team model allowlists, and visible fallback to other models with a circuit breaker. |
 | **MCP gateway** | Fronts upstream MCP servers. Clients connect once; the gateway enforces per-team tool allowlists and logs every tool call. |
 | **Credential broker** | HashiCorp Vault issues **short-lived, scoped credentials** per request. Gateway pods authenticate to Vault with their Kubernetes service account, so no provider keys live in the cluster. |
 | **Policy & metering** | Per-team rate limits, token budgets, and cost attribution. |
@@ -102,6 +102,9 @@ Not just written, run: on a laptop, in kind, and on Amazon EKS against Claude mo
   and came back on its own when AWS reclaimed both Spot nodes mid-test.
 - **Signed-in users, not shared keys:** every audit line names the person, and a token that is edited,
   expired, or for another app is refused.
+- **Fallback that is never silent:** with Sonnet pointed at an unreachable region, real Claude Haiku
+  answered, the response named the model that served it, cost was priced as Haiku, and after three
+  failures the circuit breaker skipped Sonnet entirely. Claude Code kept working.
 - **Failure modes tested:** Vault down, hung upstreams, leaky upstream errors, oversized bodies, and a
   laptop sleeping past its credentials' lifetime (found live, fixed, and now a test).
 - **CI on every push:** 141 tests, lint, a production-mode check of the example policies, Terraform
@@ -134,6 +137,7 @@ ai-gateway-platform/
 - [x] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
 - [x] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
 - [x] **Claude Code support.** Anthropic Messages API with tools, thinking, prompt caching, and cache-aware cost.
+- [x] **Fallback and circuit breaking.** A throttled or failing model falls back to another, visibly and within policy.
 - [x] **Identity and run modes.** SSO sign-in through any OIDC provider, per-user audit, production-mode guardrails, and one-command local stacks.
 
 ## Design decisions
@@ -148,6 +152,7 @@ Key choices are recorded as ADRs in [`docs/adr/`](docs/adr/):
 - [0006](docs/adr/0006-anthropic-messages-api.md) Anthropic Messages API for Claude Code
 - [0007](docs/adr/0007-user-identity-oidc.md) User identity through the company identity provider
 - [0008](docs/adr/0008-run-modes.md) Development and production run modes
+- [0009](docs/adr/0009-fallback-and-circuit-breaking.md) Model fallback and circuit breaking
 
 ## Contributing and security
 

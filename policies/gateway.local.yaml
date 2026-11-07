@@ -34,6 +34,7 @@ models:
     vault_path: aws/creds/bedrock
     timeout_seconds: 600
     price: {input_per_mtok: 3.00, output_per_mtok: 15.00}
+    fallbacks: [claude-haiku-4-5]   # throttled or down: answer with Haiku, visibly (ADR-0009)
   - name: claude-haiku-4-5
     provider: bedrock
     upstream_model: us.anthropic.claude-haiku-4-5-20251001-v1:0

@@ -26,6 +26,7 @@ from .config import ModelSpec, TeamSpec
 from .errors import GatewayError
 from .metering import Meter, cost_usd
 from .providers import Provider, ProviderError
+from .routing import Route, Router, audit_fields, first_event
 
 PING_INTERVAL_SECONDS = 10.0
 UPSTREAM_ERROR = "upstream provider error; see request_id in the gateway audit log"
@@ -34,6 +35,7 @@ ATTRIBUTION = {"x-claude-code-session-id": "session_id", "x-claude-code-agent-id
                "x-claude-code-request-class": "request_class"}
 
 Admit = Callable[[TeamSpec, Any, dict[str, Any]], Awaitable[ModelSpec]]
+Plan = Callable[..., Awaitable[Route]]
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -89,6 +91,8 @@ def build_messages_router(
     current_team: Callable[..., TeamSpec],
     admit: Admit,
     meter: Meter,
+    plan: Plan,
+    routing: Router,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -114,12 +118,13 @@ def build_messages_router(
                                "invalid_request_error")
         return provider
 
-    def upstream_failed(exc: ProviderError, base: dict[str, Any], latency_ms: int) -> GatewayError:
+    def upstream_failed(exc: ProviderError, base: dict[str, Any], latency_ms: int,
+                        route: Route) -> GatewayError:
         # Upstream 4xx wording reaches the client (scrubbed of ARNs and account IDs) because
         # Claude Code retries by matching it; anything else stays generic (ADR-0005, ADR-0006).
         status = "error" if exc.status >= 500 else "rejected"
         audit.record(**base, status=status, http_status=exc.status, latency_ms=latency_ms,
-                     reason=str(exc)[:200])
+                     reason=str(exc)[:200], **audit_fields(route, base["model"], None))
         headers = {"X-Request-Id": base["request_id"]}
         if exc.retry_after:
             headers["Retry-After"] = str(exc.retry_after)
@@ -143,37 +148,48 @@ def build_messages_router(
                if h in request.headers},
         }
         model = await admit(team, name, base)
-        provider = messages_provider(name, base)
-        base["provider"] = provider.kind
+        messages_provider(name, base)
+        # Fallbacks must speak the Messages API too (ADR-0009).
+        route = await plan(team, model, lambda m: hasattr(providers[m.name], "messages"))
         started = time.perf_counter()
 
         def elapsed_ms() -> int:
             return int((time.perf_counter() - started) * 1000)
 
+        def headers(served: ModelSpec) -> dict[str, str]:
+            return {"X-Request-Id": base["request_id"], "X-AIGW-Served-Model": served.name}
+
         if not stream:
             try:
-                result = await provider.messages(body, betas(request))
+                result, served = await routing.call(
+                    route, lambda m: providers[m.name].messages(body, betas(request)))
             except ProviderError as exc:
-                raise upstream_failed(exc, base, elapsed_ms()) from exc
+                raise upstream_failed(exc, base, elapsed_ms(), route) from exc
+            base["provider"] = providers[served.name].kind
             usage = Usage()
             usage.add(result.get("usage"))
-            fields = usage.fields(model)
-            audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(), **fields)
+            fields = usage.fields(served)  # priced as the model that answered
+            audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(), **fields,
+                         **audit_fields(route, name, served))
             await meter.charge(team, fields["cost_usd"])
-            result["model"] = name
-            return JSONResponse(result, headers={"X-Request-Id": base["request_id"]})
+            result["model"] = served.name
+            return JSONResponse(result, headers=headers(served))
 
         # Wait for the first event before answering, so an upfront rejection (such as a beta the
-        # upstream refuses) arrives as an HTTP error the client can retry, not inside a 200 stream.
-        upstream = provider.messages_stream(body, betas(request))
+        # upstream refuses) arrives as an HTTP error the client can retry, not inside a 200 stream,
+        # and a model that fails to start can fall back.
         try:
-            first = await upstream.__anext__()
+            (first, upstream), served = await routing.call(
+                route, lambda m: first_event(providers[m.name].messages_stream(body,
+                                                                              betas(request))))
         except ProviderError as exc:
-            raise upstream_failed(exc, base, elapsed_ms()) from exc
+            raise upstream_failed(exc, base, elapsed_ms(), route) from exc
+        base["provider"] = providers[served.name].kind
 
         async def relay() -> AsyncIterator[str]:
             async def events() -> AsyncIterator[dict[str, Any]]:
-                yield first
+                if first is not None:
+                    yield first
                 async for event in upstream:
                     yield event
 
@@ -181,7 +197,7 @@ def build_messages_router(
             try:
                 async for event in _with_pings(events(), PING_INTERVAL_SECONDS):
                     if event["type"] == "message_start":
-                        event["message"]["model"] = name
+                        event["message"]["model"] = served.name
                         usage.add(event["message"].get("usage"))
                     elif event["type"] == "message_delta":
                         usage.add(event.get("usage"))
@@ -193,15 +209,15 @@ def build_messages_router(
                 yield _sse({"type": "error", "error": {
                     "type": kind, "message": exc.client_message or UPSTREAM_ERROR}})
             finally:
-                fields = usage.fields(model)
+                fields = usage.fields(served)
                 extra = {"reason": reason} if reason else {}
                 audit.record(**base, status=status, http_status=200, latency_ms=elapsed_ms(),
-                             chunks=chunks, **fields, **extra)
+                             chunks=chunks, **fields, **audit_fields(route, name, served),
+                             **extra)
                 await meter.charge(team, fields["cost_usd"])
 
         return StreamingResponse(relay(), media_type="text/event-stream",
-                                 headers={"X-Request-Id": base["request_id"],
-                                          "Cache-Control": "no-cache"})
+                                 headers={**headers(served), "Cache-Control": "no-cache"})
 
     @router.post("/v1/messages/count_tokens", response_model=None)
     async def count_tokens(request: Request,

@@ -113,6 +113,31 @@ Claude Code reported, with its 18K-token system prompt written to the prompt cac
   internet over HTTPS with real (not demo) keys, and the OpenAI-format path to Bedrock does not yet carry
   tool calls, so it suits chat rather than agent mode.
 
+## Fallback when a model is throttled or down
+
+Give a model `fallbacks` and the gateway tries them in order when it answers 429, 5xx, or times out
+([ADR-0009](adr/0009-fallback-and-circuit-breaking.md)). A fallback is only used if the team may use
+it, and never onto a priced model once the team's budget is spent. It is never silent:
+
+```yaml
+models:
+  - name: claude-sonnet-4-5
+    # ...
+    fallbacks: [claude-haiku-4-5]
+circuit_breaker: {failure_threshold: 3, cooldown_seconds: 30}   # the defaults
+```
+
+```bash
+curl -si http://localhost:8080/v1/messages -H "x-api-key: dev-platform-key" ... | grep -i served
+# X-AIGW-Served-Model: claude-haiku-4-5
+# audit: {"model": "claude-sonnet-4-5", "served_model": "claude-haiku-4-5",
+#         "fallback_attempts": [{"model": "claude-sonnet-4-5", "reason": "..."}], ...}
+```
+
+After `failure_threshold` consecutive failures a model is skipped for `cooldown_seconds`
+(`"reason": "circuit_open"`), then one trial request goes through. `aigw_fallbacks_total` counts
+fallbacks by team, requested, and served model.
+
 ## MCP tool calls
 
 MCP servers listed under `mcp_servers` are reachable at `/mcp/{name}` with the same team keys

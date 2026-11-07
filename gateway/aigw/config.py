@@ -87,6 +87,9 @@ class ModelSpec(BaseModel):
     vault_path: str | None = None
     price: Price | None = None  # without it the model is metered in tokens but costs 0
     timeout_seconds: float = 120.0
+    # Other models (by name) to try, in order, when this one is throttled, down, or timing out
+    # (ADR-0009). Only one level deep: a fallback's own fallbacks are not followed.
+    fallbacks: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_provider_fields(self) -> ModelSpec:
@@ -99,6 +102,13 @@ class ModelSpec(BaseModel):
         if self.vault_path and self.api_key_env:
             raise ValueError(f"model {self.name!r}: set vault_path or api_key_env, not both")
         return self
+
+
+class CircuitBreakerSpec(BaseModel):
+    """Skip a model for a while after repeated upstream failures, going straight to fallbacks."""
+
+    failure_threshold: int = Field(default=3, gt=0)  # consecutive retryable failures
+    cooldown_seconds: float = Field(default=30.0, gt=0)  # then one trial request is let through
 
 
 class StoreSpec(BaseModel):
@@ -162,6 +172,7 @@ class GatewayConfig(BaseModel):
     oidc: OidcSpec | None = None
     vault: VaultSpec | None = None
     store: StoreSpec = Field(default_factory=StoreSpec)
+    circuit_breaker: CircuitBreakerSpec = Field(default_factory=CircuitBreakerSpec)
     models: list[ModelSpec]
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     teams: list[TeamSpec]
@@ -178,6 +189,11 @@ class GatewayConfig(BaseModel):
         names = [m.name for m in self.models]
         if len(names) != len(set(names)):
             raise ValueError("model names must be unique")
+        for model in self.models:
+            bad = [f for f in model.fallbacks if f not in names or f == model.name]
+            if bad or len(model.fallbacks) != len(set(model.fallbacks)):
+                raise ValueError(f"model {model.name!r}: fallbacks must be other, distinct, "
+                                 f"known models (got {model.fallbacks})")
         team_names = [t.name for t in self.teams]
         if len(team_names) != len(set(team_names)):
             raise ValueError("team names must be unique")

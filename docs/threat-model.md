@@ -68,6 +68,7 @@
 |---|---|---|---|
 | Info disclosure | Client's gateway key forwarded to an MCP server | Never forwarded; upstream token comes from Vault | `mcp.py` |
 | Info disclosure | Prompt or tool content in logs, metrics, or spans | Metadata only, enforced by tests | `audit.py`, `metrics.py`, tests |
+| DoS | One model, region, or account outage stalls every agent | Per-model fallbacks with a circuit breaker; fallbacks respect team allowlists and budgets, and are visible in responses and the audit log | `routing.py`, ADR-0009 |
 | DoS | Slow or hung upstream ties up the gateway | **Gap → fixed in Phase 6:** explicit Bedrock connect/read timeouts and bounded retries (boto3 defaults allowed ~4 attempts × 60 s) | `bedrock.py`; failure tests |
 | Tampering | Malicious tool results (prompt injection) steer the agent | **Out of scope:** the gateway does not inspect content. Mitigated by allowlisting only trusted MCP servers and least-privilege tools per team | policy |
 

@@ -19,6 +19,7 @@ models:
     region: us-west-2
     timeout_seconds: 600  # long agentic turns with thinking
     price: {input_per_mtok: 3.00, output_per_mtok: 15.00}
+    fallbacks: [claude-haiku-4-5]   # throttled or down: answer with Haiku, visibly (ADR-0009)
 
   - name: claude-opus-4-6
     provider: bedrock
@@ -26,6 +27,7 @@ models:
     region: us-west-2
     timeout_seconds: 600
     price: {input_per_mtok: 5.00, output_per_mtok: 25.00}
+    fallbacks: [claude-sonnet-4-5, claude-haiku-4-5]
 
   - name: claude-haiku-4-5
     provider: bedrock

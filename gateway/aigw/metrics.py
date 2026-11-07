@@ -25,6 +25,8 @@ TOKENS = Counter("aigw_tokens", "Tokens processed.", ["team", "model", "directio
                  registry=REGISTRY)
 COST = Counter("aigw_cost_usd", "Spend in USD at policy prices.", ["team", "model"],
                registry=REGISTRY)
+FALLBACKS = Counter("aigw_fallbacks", "Requests answered by a fallback model (ADR-0009).",
+                    ["team", "requested", "served"], registry=REGISTRY)
 
 
 def _target(event: dict[str, Any]) -> str:
@@ -47,9 +49,13 @@ def observe(event: dict[str, Any]) -> None:
         stream = "true" if event.get("stream") else "false"
         LATENCY.labels(kind, target, stream).observe(event["latency_ms"] / 1000)
     if kind == "chat_completion" and status != "denied":
-        TOKENS.labels(team, target, "input").inc(event.get("prompt_tokens") or 0)
-        TOKENS.labels(team, target, "output").inc(event.get("completion_tokens") or 0)
+        # Tokens and spend belong to the model that answered, which a fallback may have changed.
+        served = str(event.get("served_model") or target)
+        if event.get("served_model"):
+            FALLBACKS.labels(team, target, served).inc()
+        TOKENS.labels(team, served, "input").inc(event.get("prompt_tokens") or 0)
+        TOKENS.labels(team, served, "output").inc(event.get("completion_tokens") or 0)
         for direction in ("cache_read", "cache_write"):
             if event.get(f"{direction}_tokens"):
-                TOKENS.labels(team, target, direction).inc(event[f"{direction}_tokens"])
-        COST.labels(team, target).inc(event.get("cost_usd") or 0)
+                TOKENS.labels(team, served, direction).inc(event[f"{direction}_tokens"])
+        COST.labels(team, served).inc(event.get("cost_usd") or 0)

@@ -87,6 +87,7 @@ A gateway that can be bypassed controls nothing. Close the other paths:
 | One endpoint for OpenAI and Anthropic APIs, MCP | ✅ | |
 | Short-lived AWS credentials (Vault, STS, IRSA, KMS unseal) | ✅ | Vault HA (Raft x3) |
 | Per-team models, tools, rate limits, budgets, cost | ✅ | Per-user limits |
+| Model fallback with circuit breaker (ADR-0009) | ✅ | Choose fallbacks within approved regions |
 | SSO sign-in (any OIDC IdP), per-user audit | ✅ (Keycloak) | Register apps in your IdP |
 | Production-mode guardrails, CI policy gate | ✅ | |
 | Audit, metrics, traces, SLOs | ✅ | Ship audit to S3 Object Lock / SIEM |

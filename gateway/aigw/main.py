@@ -11,7 +11,7 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx
@@ -31,6 +31,7 @@ from .metering import Meter, cost_usd
 from .oidc import OidcError, OidcVerifier, looks_like_jwt
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
+from .routing import CircuitBreaker, Route, Router, audit_fields, first_event
 from .schemas import ChatCompletionRequest
 from .store import MemoryStore, RedisStore, Store, StoreError
 from .vault import VaultClient
@@ -51,6 +52,13 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
+async def _chain(first: list[Any], rest: AsyncIterator[Any]) -> AsyncIterator[Any]:
+    for item in first:
+        yield item
+    async for item in rest:
+        yield item
+
+
 def create_app(
     config: GatewayConfig | None = None,
     providers: dict[str, Provider] | None = None,
@@ -69,6 +77,7 @@ def create_app(
                     if config.store.backend == "redis" else MemoryStore())
     limiter = limiter or RateLimiter(store)
     meter = Meter(store)
+    router = Router(models, CircuitBreaker(config.circuit_breaker))
     if config.mode == "development" and (issues := config.production_issues()):
         # Development mode starts anyway, but says what production mode would refuse (ADR-0008).
         log.warning("aigw: development mode; not for shared environments:\n  - %s",
@@ -184,6 +193,14 @@ def create_app(
                                headers={"Retry-After": "3600"})
         return model
 
+    async def plan(team: TeamSpec, model: ModelSpec,
+                   usable: Callable[[ModelSpec], bool] = lambda _: True) -> Route:
+        """The models to try for a request (ADR-0009). A team over budget may still use a free
+        model, but must not spill onto a priced fallback when that free model fails."""
+        over = (model.price is None and any(models[f].price for f in model.fallbacks)
+                and await meter.over_budget(team))
+        return router.route(team, model.name, lambda m: usable(m) and not (over and m.price))
+
     @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(
         req: ChatCompletionRequest, team: TeamSpec = Depends(current_team)
@@ -192,9 +209,7 @@ def create_app(
         base = {"request_id": request_id, "team": team.name, "model": req.model,
                 "stream": req.stream}
         model = await admit(team, req.model, base)
-
-        provider = providers[req.model]
-        base["provider"] = provider.kind
+        route = await plan(team, model)
         started = time.perf_counter()
 
         def elapsed_ms() -> int:
@@ -203,68 +218,96 @@ def create_app(
         def upstream_span():  # OTel GenAI semantic conventions
             return tracing.tracer.start_as_current_span(
                 f"chat {model.name}", kind=SpanKind.CLIENT, attributes={
-                    "gen_ai.operation.name": "chat", "gen_ai.system": provider.kind,
+                    "gen_ai.operation.name": "chat",
                     "gen_ai.request.model": model.upstream_model or model.name,
                     "aigw.team": team.name, "aigw.request_id": request_id})
 
-        def end_span(span: Span, status: str, prompt: int | None, completion: int | None,
-                     cost: float) -> None:
+        def end_span(span: Span, served: ModelSpec | None, status: str, prompt: int | None,
+                     completion: int | None, cost: float) -> None:
+            if served is not None:
+                span.set_attributes({"gen_ai.system": providers[served.name].kind,
+                                     "gen_ai.response.model": served.upstream_model or served.name})
             span.set_attributes({"gen_ai.usage.input_tokens": prompt or 0,
                                  "gen_ai.usage.output_tokens": completion or 0,
                                  "aigw.cost_usd": cost})
             if status == "error":
                 span.set_status(StatusCode.ERROR)
 
+        def failed(span: Span, exc: ProviderError) -> GatewayError:
+            # Upstream errors can carry ARNs, account IDs, or internal paths: clients get a
+            # generic message, the audit line keeps the detail.
+            end_span(span, None, "error", None, None, 0.0)
+            audit.record(**base, status="error", http_status=502, latency_ms=elapsed_ms(),
+                         reason=str(exc)[:200], **audit_fields(route, model.name, None))
+            return GatewayError(502, UPSTREAM_ERROR, "upstream_error",
+                                headers={"X-Request-Id": request_id})
+
+        def response_headers(served: ModelSpec) -> dict[str, str]:
+            # A fallback is never silent: the client can see which model answered.
+            return {"X-Request-Id": request_id, "X-AIGW-Served-Model": served.name}
+
         if req.stream:
+            # Wait for the first chunk before answering, so a model that fails to start can fall
+            # back, and a request nobody can serve gets an HTTP error instead of a broken stream.
+            try:
+                (first, upstream), served = await router.call(
+                    route, lambda m: first_event(providers[m.name].stream(req, request_id)))
+            except ProviderError as exc:
+                with upstream_span() as span:
+                    raise failed(span, exc) from exc
+            base["provider"] = providers[served.name].kind
+
             async def events() -> AsyncIterator[str]:
                 status, chunks, tokens, reason = "ok", 0, {}, None
                 with upstream_span() as span:
                     try:
-                        async for event in provider.stream(req, request_id):
+                        pending = [first] if first is not None else []
+                        async for event in _chain(pending, upstream):
                             chunks += 1
+                            event["model"] = served.name
                             tokens = event.get("usage") or tokens
                             yield _sse(event)
                         yield "data: [DONE]\n\n"
                     except ProviderError as exc:
-                        # Upstream errors can carry ARNs, account IDs, or internal paths: clients
-                        # get a generic message, the audit line keeps the detail.
                         status, reason = "error", str(exc)[:200]
                         yield _sse({"error": {"message": UPSTREAM_ERROR,
                                               "type": "upstream_error"}})
                     finally:
                         prompt = tokens.get("prompt_tokens")
                         completion = tokens.get("completion_tokens")
-                        cost = cost_usd(model, prompt, completion)
-                        end_span(span, status, prompt, completion, cost)
+                        cost = cost_usd(served, prompt, completion)
+                        end_span(span, served, status, prompt, completion, cost)
                         extra = {"reason": reason} if reason else {}
                         audit.record(**base, status=status, http_status=200,
-                                     latency_ms=elapsed_ms(), chunks=chunks, prompt_tokens=prompt,
-                                     completion_tokens=completion, cost_usd=cost, **extra)
+                                     latency_ms=elapsed_ms(), chunks=chunks,
+                                     prompt_tokens=prompt, completion_tokens=completion,
+                                     cost_usd=cost, **audit_fields(route, model.name, served),
+                                     **extra)
                         await meter.charge(team, cost)
 
             return StreamingResponse(events(), media_type="text/event-stream",
-                                     headers={"X-Request-Id": request_id})
+                                     headers=response_headers(served))
 
         with upstream_span() as span:
             try:
-                result = await provider.complete(req, request_id)
+                result, served = await router.call(
+                    route, lambda m: providers[m.name].complete(req, request_id))
             except ProviderError as exc:
-                end_span(span, "error", None, None, 0.0)
-                audit.record(**base, status="error", http_status=502, latency_ms=elapsed_ms(),
-                             reason=str(exc)[:200])
-                raise GatewayError(502, UPSTREAM_ERROR, "upstream_error",
-                                   headers={"X-Request-Id": request_id}) from exc
-
+                raise failed(span, exc) from exc
+            base["provider"] = providers[served.name].kind
+            result["model"] = served.name
             usage = result.get("usage") or {}
             prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
-            cost = cost_usd(model, prompt, completion)
-            end_span(span, "ok", prompt, completion, cost)
+            cost = cost_usd(served, prompt, completion)  # priced as the model that answered
+            end_span(span, served, "ok", prompt, completion, cost)
             audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(),
-                         prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost)
+                         prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost,
+                         **audit_fields(route, model.name, served))
         await meter.charge(team, cost)
-        return result
+        return JSONResponse(result, headers=response_headers(served))
 
-    app.include_router(build_messages_router(models, providers, current_team, admit, meter))
+    app.include_router(build_messages_router(models, providers, current_team, admit, meter,
+                                             plan, router))
     app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http))
     tracing.setup(app)
     return app

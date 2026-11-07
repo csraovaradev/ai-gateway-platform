@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Model fallback and circuit breaking** (ADR-0009): a model that is throttled, down, or timing out
+  falls back to the policy's `fallbacks`, only to models the team may use and never onto a priced
+  model once the team's budget is spent. Responses carry `X-AIGW-Served-Model`, the audit log
+  records `served_model` and `fallback_attempts`, and cost and metrics follow the model that
+  answered. A per-model circuit breaker skips a failing model for a cooldown. Streamed chat
+  responses now wait for the first chunk, so a model that fails to start returns an HTTP error or
+  falls back instead of a 200 with an error inside.
+
 ## v1.0.0 (2026-11-02)
 
 First release: a self-hosted gateway that puts guardrails around enterprise use of LLMs and MCP tools.
