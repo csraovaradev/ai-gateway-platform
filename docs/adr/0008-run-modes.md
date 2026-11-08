@@ -1,6 +1,6 @@
 # ADR-0008: Development and production run modes
 
-- **Status:** Accepted
+- **Status:** Accepted; the EKS consequence below is superseded by ADR-0013
 - **Date:** 2026-11-02
 - **Follows:** ADR-0005, ADR-0007
 
@@ -45,3 +45,5 @@ People who find the repo also need an obvious way in. Until now the README liste
   NetworkPolicy, IAM scoping, or the identity provider's own settings.
 - The guided EKS demo (`scripts/demo-eks.sh`) keeps the demo keys so it runs out of the box, so it stays in
   development mode. A real deployment renders the production policy instead.
+- *Update (ADR-0013):* the EKS deploy now runs in production mode with generated keys, and the guided
+  demo reads them from `~/.aigw/keys-<cluster>.json`.

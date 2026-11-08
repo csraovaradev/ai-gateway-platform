@@ -18,6 +18,16 @@ spec:
         {{- end }}
       ports:
         - port: http
+    {{- with $np.ingressCidrs }}
+    # A load balancer that targets pod IPs (the AWS ALB in IP mode) connects from these ranges.
+    - from:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: http
+    {{- end }}
   egress:
     - to:
         - namespaceSelector:
@@ -49,6 +59,14 @@ spec:
         {{- end }}
       ports:
         - port: {{ $np.redis.port }}
+    {{- end }}
+    {{- range $np.extraEgress }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace }}
+      ports:
+        - port: {{ .port }}
     {{- end }}
     {{- if $np.httpsEgress }}
     - ports:

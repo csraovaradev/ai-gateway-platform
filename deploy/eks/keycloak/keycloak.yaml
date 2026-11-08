@@ -1,0 +1,103 @@
+# Keycloak at https://__SSO_HOST__ (ADR-0013). Rendered and applied by scripts/eks-deploy.sh.
+#
+# Only /realms/aigw and /resources are routed from the internet: the admin console and the master
+# realm are reachable from inside the cluster only. The realm (clients, groups, the owner's account)
+# comes from the `keycloak-realm` Secret the deploy script generates; there are no demo users.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: auth
+  labels: { app.kubernetes.io/name: keycloak }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: keycloak }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: keycloak
+          image: __KEYCLOAK_IMAGE__
+          args: ["start", "--optimized", "--import-realm"]
+          env:
+            - { name: KC_HOSTNAME, value: "https://__SSO_HOST__" }
+            # The gateway reaches Keycloak in-cluster for keys and token exchange; tokens still
+            # name the public issuer.
+            - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }
+            - { name: KC_PROXY_HEADERS, value: xforwarded }  # TLS ends at the ALB
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: admin }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+      volumes:
+        - name: realm
+          secret: { secretName: keycloak-realm }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: auth
+spec:
+  selector: { app.kubernetes.io/name: keycloak }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak
+  namespace: auth
+  annotations:
+    alb.ingress.kubernetes.io/group.name: aigw-edge
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: __CERT_ARN__
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/wafv2-acl-arn: __WAF_ARN__
+    alb.ingress.kubernetes.io/healthcheck-path: /realms/aigw
+spec:
+  ingressClassName: alb
+  rules:
+    - host: __SSO_HOST__
+      http:
+        paths:
+          - { path: /realms/aigw, pathType: Prefix, backend: { service: { name: keycloak, port: { name: http } } } }
+          - { path: /resources, pathType: Prefix, backend: { service: { name: keycloak, port: { name: http } } } }
+---
+# Only the load balancer (VPC addresses) and the gateway may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak
+  namespace: auth
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: __ALB_CIDR__ }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: aigw }
+      ports:
+        - { port: 8080 }
+        - { port: 9000 }

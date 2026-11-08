@@ -61,7 +61,7 @@ One gateway image and one policy format, three ways to run it
 |---|---|---|---|
 | **1. Try it** | `make quickstart` | Docker | Gateway, mock model, demo MCP server, demo keys. Works with curl, OpenAI and Anthropic SDKs, and Claude Code |
 | **2. Full local stack** | `make local` | Docker (+ AWS for real models) | Adds SSO sign-in (Keycloak), Vault-issued credentials, Redis, Claude on Bedrock, Prometheus, Grafana, Jaeger |
-| **3. Production** | Terraform + `scripts/eks-deploy.sh` | An AWS account | EKS, Vault with KMS auto-unseal and IRSA, ElastiCache, NetworkPolicy; `mode: production` policies |
+| **3. Production** | Terraform + `scripts/eks-deploy.sh` | An AWS account (+ a domain for HTTPS) | EKS, Vault HA with KMS auto-unseal and IRSA, ElastiCache, NetworkPolicy, `mode: production`; with a domain, HTTPS + WAF + SSO and audit logs in S3 Object Lock |
 
 ```bash
 git clone https://github.com/csraovaradev/ai-gateway-platform.git && cd ai-gateway-platform
@@ -141,6 +141,7 @@ ai-gateway-platform/
 - [x] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
 - [x] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
 - [x] **Claude Code support.** Anthropic Messages API with tools, thinking, prompt caching, and cache-aware cost.
+- [x] **Production edge on EKS.** Public HTTPS with ACM and WAF, SSO on its own subdomain, Vault as three Raft replicas, audit logs in S3 with Object Lock, production mode with generated keys.
 - [x] **MCP on behalf of people.** MCP servers receive a token issued to them for the signed-in person (OAuth token exchange), never the person's own token.
 - [x] **Per-person limits.** Rate limits and budgets for each signed-in person, so one runaway agent cannot lock out a team.
 - [x] **Content guardrails.** Secrets and personal data in prompts are redacted, blocked, or audited before they leave.
@@ -163,6 +164,7 @@ Key choices are recorded as ADRs in [`docs/adr/`](docs/adr/):
 - [0010](docs/adr/0010-content-guardrails.md) Content guardrails for secrets and personal data
 - [0011](docs/adr/0011-per-user-limits.md) Per-person rate limits and budgets
 - [0012](docs/adr/0012-mcp-on-behalf-of.md) MCP calls on behalf of the signed-in person
+- [0013](docs/adr/0013-public-edge-vault-ha-audit-storage.md) Public HTTPS edge, Vault HA, tamper-resistant audit storage
 
 ## Contributing and security
 

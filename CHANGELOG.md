@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Production edge on EKS** (ADR-0013): with `domain_name` set, `https://api.<domain>` and
+  `https://sso.<domain>` behind an ALB (AWS Load Balancer Controller), ACM certificate, and AWS WAF,
+  with DNS from ExternalDNS; only API paths routed, Keycloak's admin console unreachable. Vault runs
+  as three Raft replicas. Fluent Bit ships audit lines to S3 with Object Lock. The EKS gateway runs in
+  `mode: production` with generated team keys; `scripts/eks-teardown.sh` removes what the
+  controllers created before `terraform destroy`. Fixes the gateway's Vault policy, which did not
+  allow the MCP service-token path used in the production example.
 - **MCP on behalf of people** (ADR-0012): with `on_behalf_of`, a signed-in person's MCP calls carry a
   token the identity provider issued to that server for that person (OAuth 2.0 token exchange,
   RFC 8693), cached until shortly before expiry. The person's own token never leaves the gateway;

@@ -1,0 +1,50 @@
+# Public edge for the gateway (ADR-0013), layered on aigw-values.yaml when a domain is set.
+# Rendered by scripts/eks-deploy.sh.
+
+ingress:
+  enabled: true
+  className: alb
+  host: __API_HOST__
+  annotations:
+    alb.ingress.kubernetes.io/group.name: aigw-edge
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: __CERT_ARN__
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/wafv2-acl-arn: __WAF_ARN__
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    # Agent turns stream for minutes; the gateway sends pings, but give slow upstreams room.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
+
+networkPolicy:
+  ingressCidrs: [__ALB_CIDR__]  # the ALB's subnets only, not every pod in the VPC
+  extraEgress:
+    - { namespace: auth, port: 8080 }  # Keycloak: signing keys and token exchange
+
+policy:
+  oidc:
+    issuer: https://__SSO_HOST__/realms/aigw
+    audience: aigw
+    # In-cluster for keys and token exchange; tokens still name the public issuer.
+    jwks_url: http://keycloak.auth.svc:8080/realms/aigw/protocol/openid-connect/certs
+    token_url: http://keycloak.auth.svc:8080/realms/aigw/protocol/openid-connect/token
+    user_claim: preferred_username
+    client_id: aigw
+    client_secret_vault_path: secret/data/aigw/oidc
+
+  teams:
+    - name: platform
+      oidc_groups: [eng-platform]
+      key_sha256: [__PLATFORM_KEY_SHA256__]
+      allowed_models: ["*"]
+      requests_per_minute: 120
+      budget: { usd: 10, period: day }
+      per_user: { requests_per_minute: 60, budget: { usd: 5, period: day } }
+    - name: data
+      oidc_groups: [eng-data]
+      key_sha256: [__DATA_KEY_SHA256__]
+      allowed_models: [mock-echo, bedrock-claude, claude-haiku-4-5]
+      requests_per_minute: 10
+      budget: { usd: 1, period: day }
+      content: { secrets: block, pii: redact }

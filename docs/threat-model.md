@@ -4,7 +4,7 @@
   calls (Amazon Bedrock, OpenAI-compatible servers, MCP servers).
 - **Method:** STRIDE per trust boundary. Each threat lists its mitigation and where it is enforced, or
   marks it as a gap with the work that closes it.
-- **Last reviewed:** 2026-11-08 (fallback and content guardrails, ADR-0009 and ADR-0010).
+- **Last reviewed:** 2026-11-08 (public edge, Vault HA, audit storage, ADR-0012 and ADR-0013).
 
 ## Assets
 
@@ -53,6 +53,16 @@
 | DoS | Unbounded metric labels from client strings | Labels only from policy values | `metrics.py`, ADR-0004 |
 | Elevation | Call a model or tool outside the team's policy | Allowlists checked before forwarding; `tools/list` filtered; batches rejected | `main.py`, `mcp.py` |
 
+### 1b. Internet → public edge (ADR-0013)
+
+| STRIDE | Threat | Mitigation | Where |
+|---|---|---|---|
+| Spoofing | Anyone on the internet uses the public demo keys or demo accounts | EKS runs `mode: production`: keys generated at deploy, no demo users, no password grant; sign-in is the browser device flow only | `eks-deploy.sh`, ADR-0008 |
+| Tampering | Eavesdropping or downgrade between client and edge | HTTPS only (no plain-HTTP listener), TLS 1.2/1.3 policy, ACM certificate | `edge.tf` |
+| Elevation | Reaching Keycloak's admin console or internal endpoints | Only `/realms/aigw` and `/resources` (sso) and `/v1`, `/mcp` (api) are routed; `/admin`, `/metrics`, `/healthz` are not | Ingresses |
+| DoS | Request floods and scanners | WAF per-IP rate limit, IP reputation list, known-bad-inputs and common rules (body rules count-only, ADR-0013) | `edge.tf` |
+| Elevation | A compromised pod in the VPC reaches Keycloak or the gateway directly | NetworkPolicies admit only the ALB's two public subnets (one /23), not the VPC range | Helm, `keycloak.yaml` |
+
 ### 2. Gateway → Vault
 
 | STRIDE | Threat | Mitigation | Where |
@@ -60,6 +70,7 @@
 | Spoofing | Another workload logs in as the gateway | Kubernetes auth bound to one service account and namespace; token audience `vault` | `vault-k8s-setup.sh`, Helm |
 | Spoofing | Man-in-the-middle impersonates Vault | **Gap → fixed in Phase 6:** TLS with a pinned CA bundle, optional client certificate | `vault.py` |
 | Info disclosure | Stolen gateway credentials | STS creds live 15 min and allow only `bedrock:InvokeModel*`; gateway token limited to the `aigw` policy | ADR-0001 |
+| DoS | A Vault node fails | Three Raft replicas on separate nodes, each auto-unsealed with KMS; a PodDisruptionBudget keeps quorum during drains (ADR-0013) | `vault-values.yaml` |
 | DoS | Vault unavailable | Cached leases keep working until 2/3 of TTL; afterwards only Vault-backed models fail (502), others keep serving | `vault.py`; failure tests |
 
 ### 3. Gateway → upstreams
@@ -85,7 +96,7 @@
 | STRIDE | Threat | Mitigation | Where |
 |---|---|---|---|
 | Tampering | Unreviewed policy change grants access | Policy is code: reviewed in pull requests, validated in CI (every example policy is loaded by tests) | CI |
-| Repudiation | Audit log altered after the fact | **Accepted for now:** stdout logs; in production ship them to append-only storage (CloudWatch Logs with a retention policy, or S3 Object Lock) | deployment |
+| Repudiation | Audit log altered after the fact | **Gap → fixed (ADR-0013):** on EKS, Fluent Bit ships audit lines to S3 with Object Lock; its role can only add objects, and records are locked for the retention period | `audit.tf`, Fluent Bit |
 | Info disclosure | Public demo keys, in-memory limits, or plain-HTTP Vault copied from a laptop policy into production | `mode: production` refuses to start with any of them; CI gates the production policy with `aigw.check --production` | `config.py`, ADR-0008 |
 
 ## Accepted risks

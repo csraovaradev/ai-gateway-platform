@@ -36,6 +36,8 @@ networkPolicy:
   vault: { namespace: vault, port: 8200 }
   redis: { namespace: "", cidr: "", port: 6379 }  # set one: in-cluster namespace or ElastiCache CIDR
   httpsEgress: true  # Bedrock and MCP servers have no fixed IPs; tighter needs FQDN policies
+  ingressCidrs: []  # e.g. the VPC CIDR when an ALB sends traffic straight to pod IPs
+  extraEgress: []  # other in-cluster services, e.g. [{namespace: auth, port: 8080}] for Keycloak
 
 ingress:
   enabled: false

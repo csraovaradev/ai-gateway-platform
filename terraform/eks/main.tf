@@ -1,6 +1,7 @@
 # Phase 0: VPC and EKS for the gateway, Vault, and their dependencies.
-# Cost while running is roughly $0.18/h (EKS control plane, one NAT gateway, two Spot Graviton nodes,
-# the smallest ElastiCache node). `terraform destroy` removes everything.
+# Cost while running is roughly $0.20/h (EKS control plane, one NAT gateway, three Spot Graviton
+# nodes, the smallest ElastiCache node), plus about $0.03/h for the ALB and WAF when a domain is set.
+# `terraform destroy` removes everything except the Route 53 domain itself.
 
 provider "aws" {
   region = var.region
@@ -73,9 +74,9 @@ module "eks" {
       ami_type       = "AL2023_ARM_64_STANDARD"
       instance_types = var.node_instance_types
       capacity_type  = "SPOT"
-      min_size       = 2
-      max_size       = 3
-      desired_size   = 2
+      min_size       = var.node_count
+      max_size       = var.node_count + 1
+      desired_size   = var.node_count
       disk_size      = 20
     }
   }

@@ -1,0 +1,17 @@
+# ExternalDNS (ADR-0013): points api.<domain> and sso.<domain> at the ALB.
+# Rendered by scripts/eks-deploy.sh. Chart: external-dns/external-dns 1.23.0.
+# upsert-only: it creates and updates its own records but never deletes anything in the zone.
+provider:
+  name: aws
+sources: [ingress]
+domainFilters: [__DOMAIN__]
+policy: upsert-only
+registry: txt
+txtOwnerId: __CLUSTER__
+env:
+  - { name: AWS_DEFAULT_REGION, value: __REGION__ }
+serviceAccount:
+  create: true
+  name: external-dns
+  annotations:
+    eks.amazonaws.com/role-arn: __DNS_ROLE_ARN__

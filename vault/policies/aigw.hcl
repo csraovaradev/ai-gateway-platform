@@ -8,3 +8,13 @@ path "aws/creds/bedrock" {
 path "secret/data/aigw/upstream/*" {
   capabilities = ["read"]
 }
+
+# MCP servers' service tokens, for API-key callers (ADR-0002).
+path "secret/data/aigw/mcp/*" {
+  capabilities = ["read"]
+}
+
+# The gateway's own client secret at the identity provider, for token exchange (ADR-0012).
+path "secret/data/aigw/oidc" {
+  capabilities = ["read"]
+}

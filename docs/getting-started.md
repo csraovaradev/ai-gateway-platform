@@ -125,8 +125,10 @@ scripts/demo-eks.sh       # guided tour of what is running and why
 terraform -chdir=terraform/eks destroy                                              # when done
 ```
 
-The EKS deploy keeps the demo keys so the guided demo works out of the box, so it runs in development
-mode. For a real rollout, start from
+The EKS deploy runs in `mode: production`: it generates team keys into `~/.aigw/keys-<cluster>.json`
+instead of using the public demo keys, and the guided demo reads them from there. With a domain in
+Route 53 (`domain_name` in `terraform/eks/terraform.tfvars`) it also serves `https://api.<domain>` and
+`https://sso.<domain>` behind WAF; see [guides.md](guides.md#public-https-endpoint-optional). For a real rollout, start from
 [`policies/gateway.production.example.yaml`](../policies/gateway.production.example.yaml): it signs
 people in through your identity provider and passes `python -m aigw.check --production`. What else a
 production rollout needs (DNS and TLS at the edge, SSO, managed Claude Code settings, enforcement) is in

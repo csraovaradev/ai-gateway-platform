@@ -262,6 +262,25 @@ terraform -chdir=terraform/iam-bedrock apply \
 scripts/eks-deploy.sh     # image to ECR, Vault (init, config), gateway, smoke test
 ```
 
+### Public HTTPS endpoint (optional)
+
+With a domain registered in Route 53 ([ADR-0013](adr/0013-public-edge-vault-ha-audit-storage.md)),
+the same deploy serves `https://api.<domain>` and `https://sso.<domain>` behind an ALB with an ACM
+certificate and AWS WAF, runs Vault as three Raft replicas, and ships audit lines to S3 with Object
+Lock:
+
+```bash
+echo 'domain_name = "example.com"' >> terraform/eks/terraform.tfvars
+terraform -chdir=terraform/eks apply
+scripts/eks-deploy.sh                    # also: ALB controller, ExternalDNS, Keycloak, Fluent Bit
+scripts/aigw-login login --issuer https://sso.example.com/realms/aigw
+# Claude Code: ANTHROPIC_BASE_URL=https://api.example.com, apiKeyHelper as in examples/claude-code
+scripts/eks-teardown.sh && terraform -chdir=terraform/eks destroy    # when done
+```
+
+The gateway runs in `mode: production` there: team keys are generated into `~/.aigw/keys-<cluster>.json`,
+and Keycloak has no demo users, only an account for you (`~/.aigw/sso-<cluster>.json`).
+
 ## Hardening
 
 The [threat model](threat-model.md) walks every trust boundary with STRIDE and links each threat to

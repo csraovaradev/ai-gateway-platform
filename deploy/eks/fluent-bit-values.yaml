@@ -1,0 +1,53 @@
+# Fluent Bit ships the gateway's audit lines to S3 with Object Lock (ADR-0013).
+# Rendered by scripts/eks-deploy.sh. Chart: fluent/fluent-bit 0.58.3.
+#
+# Only the gateway's containers are read, and only lines that are audit JSON. The IRSA role can
+# add objects under audit/ and nothing else.
+
+serviceAccount:
+  create: true
+  name: fluent-bit
+  annotations:
+    eks.amazonaws.com/role-arn: __FLUENT_BIT_ROLE_ARN__
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 128Mi }
+
+config:
+  inputs: |
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/aigw-*_aigw_*.log
+        multiline.parser  cri
+        Tag               aigw.*
+        Mem_Buf_Limit     10MB
+        Refresh_Interval  5
+
+  filters: |
+    [FILTER]
+        Name   grep
+        Match  aigw.*
+        Regex  log ^\{"ts"
+
+    [FILTER]
+        Name          parser
+        Match         aigw.*
+        Key_Name      log
+        Parser        json
+        Reserve_Data  Off
+
+  outputs: |
+    [OUTPUT]
+        Name                s3
+        Match               aigw.*
+        bucket              __AUDIT_BUCKET__
+        region              __REGION__
+        s3_key_format       /audit/%Y/%m/%d/%H%M%S-$UUID.jsonl.gz
+        compression         gzip
+        json_date_key       false
+        total_file_size     5M
+        upload_timeout      1m
+        use_put_object      On
+        send_content_md5    On
+        store_dir           /tmp/fluent-bit/s3

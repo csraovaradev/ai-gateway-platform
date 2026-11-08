@@ -65,9 +65,9 @@ A gateway that can be bypassed controls nothing. Close the other paths:
 | Component | Demo setup (level 3) | Production |
 |---|---|---|
 | Gateway | 2 replicas, Spot | 3+ replicas across AZs, HPA, PodDisruptionBudget, on-demand base capacity |
-| Vault | 1 node, file storage, KMS auto-unseal | 3-node Raft (or HCP Vault), audit device enabled |
+| Vault | 3-node Raft, KMS auto-unseal, one replica per node (ADR-0013) | Vault audit device; HCP Vault as an alternative |
 | Redis | ElastiCache, single node | ElastiCache multi-AZ with IAM auth |
-| Edge | port-forward | Internal ALB, ACM certificate on a real domain, WAF |
+| Edge | Public ALB, ACM certificate, WAF, `api.` and `sso.` on a real domain (ADR-0013) | Internal ALB or private access (VPN, Verified Access) for company-only use |
 | Bedrock | default quotas | quotas raised, cross-region inference profiles, VPC endpoint |
 
 ### 5. Changes are reviewed; evidence is kept
@@ -85,14 +85,14 @@ A gateway that can be bypassed controls nothing. Close the other paths:
 | Area | Built and verified | Left for a real rollout |
 |---|---|---|
 | One endpoint for OpenAI and Anthropic APIs, MCP | ✅ | |
-| Short-lived AWS credentials (Vault, STS, IRSA, KMS unseal) | ✅ | Vault HA (Raft x3) |
+| Short-lived AWS credentials (Vault HA, STS, IRSA, KMS unseal) | ✅ | |
 | Per-team models, tools, rate limits, budgets, cost | ✅ | |
 | Per-person rate limits and budgets (ADR-0011) | ✅ | |
 | Model fallback with circuit breaker (ADR-0009) | ✅ | Choose fallbacks within approved regions |
 | SSO sign-in (any OIDC IdP), per-user audit | ✅ (Keycloak) | Register apps in your IdP |
 | Production-mode guardrails, CI policy gate | ✅ | |
-| Audit, metrics, traces, SLOs | ✅ | Ship audit to S3 Object Lock / SIEM |
-| TLS to Vault and Redis, NetworkPolicy, threat model | ✅ | ALB + ACM + WAF at the edge |
+| Audit, metrics, traces, SLOs; audit to S3 with Object Lock (ADR-0013) | ✅ | Forward to the SIEM; COMPLIANCE-mode lock for regulated use |
+| TLS to Vault and Redis, NetworkPolicy, threat model, HTTPS edge with WAF | ✅ | |
 | Managed Claude Code settings | Example file | MDM rollout |
 | Enforcement (SCP, egress blocking) | | Organization-level change |
 | MCP calls as the user: OAuth token exchange (ADR-0012) | ✅ | MCP servers must validate the token |

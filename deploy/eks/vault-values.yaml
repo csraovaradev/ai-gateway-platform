@@ -4,7 +4,8 @@
 # - TLS on the listener, with a certificate from the deploy script's private CA.
 # - Auto-unseal with AWS KMS: no unseal keys to type in after a restart.
 # - AWS credentials through IRSA (service account annotation): no AWS key stored anywhere.
-# - Single node with file storage on an EBS volume. For production, run 3 replicas with Raft.
+# - Three replicas with integrated Raft storage (ADR-0013): any one node can fail without losing data
+#   or availability. Replicas find each other with retry_join and each unseals itself with KMS.
 
 injector:
   enabled: false
@@ -39,24 +40,60 @@ server:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { memory: 256Mi }
 
-  standalone:
+  # One replica per node, spread across availability zones where possible.
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: vault
+              component: server
+          topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints: |
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault
+          component: server
+
+  ha:
     enabled: true
-    config: |
-      ui = false
-      disable_mlock = true
+    replicas: 3
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = false
+        disable_mlock = true
 
-      listener "tcp" {
-        address         = "[::]:8200"
-        cluster_address = "[::]:8201"
-        tls_cert_file   = "/vault/userconfig/vault-tls/tls.crt"
-        tls_key_file    = "/vault/userconfig/vault-tls/tls.key"
-      }
+        listener "tcp" {
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file   = "/vault/userconfig/vault-tls/tls.crt"
+          tls_key_file    = "/vault/userconfig/vault-tls/tls.key"
+        }
 
-      storage "file" {
-        path = "/vault/data"
-      }
+        storage "raft" {
+          path = "/vault/data"
+          retry_join {
+            leader_api_addr     = "https://vault-0.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr     = "https://vault-1.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr     = "https://vault-2.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+        }
 
-      seal "awskms" {
-        region     = "__REGION__"
-        kms_key_id = "__KMS_KEY_ID__"
-      }
+        seal "awskms" {
+          region     = "__REGION__"
+          kms_key_id = "__KMS_KEY_ID__"
+        }
+
+        service_registration "kubernetes" {}

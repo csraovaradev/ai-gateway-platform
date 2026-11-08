@@ -1,5 +1,7 @@
 # The gateway on EKS. Rendered by scripts/eks-deploy.sh from `terraform -chdir=terraform/eks output`.
 # Two replicas share rate limits, budgets, and MCP sessions through ElastiCache (ADR-0003).
+# Production mode (ADR-0008): team keys are generated at deploy time, never the public demo keys.
+# With a domain, aigw-values.edge.yaml adds the public HTTPS endpoint and sign-in (ADR-0013).
 
 image:
   repository: __IMAGE_REPO__
@@ -23,6 +25,7 @@ networkPolicy:
   redis: { cidr: __VPC_CIDR__, port: 6379 }
 
 policy:
+  mode: production
   vault:
     address: https://vault.vault.svc:8200
     auth: kubernetes
@@ -64,13 +67,11 @@ policy:
 
   teams:
     - name: platform
-      key_sha256:
-        - 9831e20a4d38b6fdfa34285772c4b88de26d51134c15107cb941d53b70859e63
+      key_sha256: [__PLATFORM_KEY_SHA256__]
       allowed_models: ["*"]
       requests_per_minute: 120
     - name: data
-      key_sha256:
-        - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
+      key_sha256: [__DATA_KEY_SHA256__]
       allowed_models: [mock-echo, bedrock-claude, claude-haiku-4-5]
       requests_per_minute: 10
       budget: { usd: 1, period: day }

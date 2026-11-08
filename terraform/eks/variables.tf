@@ -38,3 +38,27 @@ variable "bedrock_role_name" {
   type        = string
   default     = "aigw-bedrock"
 }
+
+variable "node_count" {
+  description = "Spot nodes. Three lets each Vault replica (Raft, ADR-0013) run on its own node."
+  type        = number
+  default     = 3
+}
+
+variable "domain_name" {
+  description = "Public domain with a Route 53 hosted zone, e.g. \"secureaigate.com\". Empty: no public edge."
+  type        = string
+  default     = ""
+}
+
+variable "waf_rate_limit" {
+  description = "Requests per client IP per 5 minutes before WAF blocks it."
+  type        = number
+  default     = 2000
+}
+
+variable "audit_retention_days" {
+  description = "Days each audit object is locked against deletion (S3 Object Lock, GOVERNANCE mode)."
+  type        = number
+  default     = 30
+}

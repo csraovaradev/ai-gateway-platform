@@ -1,0 +1,11 @@
+# AWS Load Balancer Controller (ADR-0013): creates the ALB from Ingress objects.
+# Rendered by scripts/eks-deploy.sh. Chart: eks/aws-load-balancer-controller 3.6.2.
+clusterName: __CLUSTER__
+region: __REGION__
+vpcId: __VPC_ID__
+replicaCount: 1
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+  annotations:
+    eks.amazonaws.com/role-arn: __LB_ROLE_ARN__
