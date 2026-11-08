@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **MCP on behalf of people** (ADR-0012): with `on_behalf_of`, a signed-in person's MCP calls carry a
+  token the identity provider issued to that server for that person (OAuth 2.0 token exchange,
+  RFC 8693), cached until shortly before expiry. The person's own token never leaves the gateway;
+  API-key callers keep the server's service token; a refused exchange fails closed.
 - **Per-person limits** (ADR-0011): `per_user: {requests_per_minute, budget}` on a team gives each
   signed-in person their own rate limit (model APIs and MCP tool calls) and budget, on top of the
   team's. API-key callers keep team limits only. The cost report adds spend per person and

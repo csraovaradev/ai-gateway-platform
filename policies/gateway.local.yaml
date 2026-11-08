@@ -13,6 +13,10 @@ oidc:
   # The gateway container reaches the same Keycloak by its service name.
   jwks_url: http://keycloak:8080/realms/aigw/protocol/openid-connect/certs
   user_claim: preferred_username
+  # The gateway's own client, to call MCP servers as the signed-in person (ADR-0012).
+  client_id: aigw
+  client_secret_env: AIGW_OIDC_CLIENT_SECRET   # public demo secret, set in compose.full.yaml
+  token_url: http://keycloak:8080/realms/aigw/protocol/openid-connect/token
 
 vault:
   address: http://vault:8200
@@ -46,6 +50,7 @@ models:
 mcp_servers:
   - name: jira
     url: http://jira-mcp:9000/mcp
+    on_behalf_of: jira-mcp        # signed-in people reach Jira as themselves (ADR-0012)
 
 teams:
   - name: platform

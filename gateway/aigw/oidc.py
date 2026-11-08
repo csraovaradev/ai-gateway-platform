@@ -8,8 +8,11 @@ who the user is (`sub`) and which groups they belong to.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Any
 
 import httpx
@@ -18,6 +21,22 @@ import jwt
 from .config import OidcSpec
 
 REFETCH_MIN_SECONDS = 30  # an unknown key ID refetches the JWKS at most this often
+EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
+ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"  # noqa: S105 - a URN
+EXCHANGE_CACHE_SIZE = 1024
+EXCHANGE_EARLY_SECONDS = 30  # re-exchange this long before a cached token expires
+
+# The signed-in person's own token for this request, kept in memory only, so the MCP proxy can
+# exchange it (ADR-0012). Never logged, never forwarded as is.
+_subject_token: ContextVar[str | None] = ContextVar("aigw_subject_token", default=None)
+
+
+def set_subject_token(token: str | None) -> None:
+    _subject_token.set(token)
+
+
+def current_subject_token() -> str | None:
+    return _subject_token.get()
 
 
 class OidcError(Exception):
@@ -130,3 +149,63 @@ class OidcVerifier:
 
     def user(self, claims: dict[str, Any]) -> str:
         return str(claims.get(self.spec.user_claim) or claims["sub"])
+
+
+class TokenExchanger:
+    """OAuth 2.0 Token Exchange (RFC 8693): trade a person's token for one the identity provider
+    issues to a single downstream audience, still naming that person (ADR-0012).
+
+    In AWS terms it is AssumeRole with session tags: a narrower credential that keeps the caller's
+    identity. Exchanged tokens are cached per person and audience until shortly before expiry.
+    """
+
+    def __init__(
+        self,
+        spec: OidcSpec,
+        client_secret: Callable[[], Awaitable[str]],
+        http: httpx.AsyncClient | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        # Token expiry is wall-clock time set by the identity provider, so the cache uses the
+        # wall clock too (the lesson of ADR-0009's credential bug).
+        self.spec, self._client_secret, self._clock = spec, client_secret, clock
+        verify = spec.tls.context() if spec.tls.configured else True
+        self._http = http or httpx.AsyncClient(timeout=spec.timeout_seconds, verify=verify)
+        self._token_url = spec.token_url
+        self._cache: OrderedDict[tuple[str, str], tuple[str, float]] = OrderedDict()
+
+    async def _url(self) -> str:
+        if self._token_url is None:
+            discovery = f"{self.spec.issuer.rstrip('/')}/.well-known/openid-configuration"
+            try:
+                resp = await self._http.get(discovery)
+                resp.raise_for_status()
+                self._token_url = resp.json()["token_endpoint"]
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                raise OidcError("token_exchange_unavailable") from exc
+        return self._token_url
+
+    async def exchange(self, subject_token: str, audience: str) -> str:
+        key = (hashlib.sha256(subject_token.encode()).hexdigest(), audience)
+        now = self._clock()
+        if (hit := self._cache.get(key)) and hit[1] - now > EXCHANGE_EARLY_SECONDS:
+            self._cache.move_to_end(key)
+            return hit[0]
+        try:
+            resp = await self._http.post(
+                await self._url(), auth=(self.spec.client_id or "", await self._client_secret()),
+                data={"grant_type": EXCHANGE_GRANT, "subject_token": subject_token,
+                      "subject_token_type": ACCESS_TOKEN_TYPE,
+                      "requested_token_type": ACCESS_TOKEN_TYPE, "audience": audience})
+        except httpx.HTTPError as exc:
+            raise OidcError("token_exchange_unavailable") from exc
+        if resp.status_code != 200:
+            raise OidcError("token_exchange_refused")
+        body = resp.json()
+        token = body.get("access_token")
+        if not token:
+            raise OidcError("token_exchange_refused")
+        self._cache[key] = (token, now + float(body.get("expires_in") or 60))
+        while len(self._cache) > EXCHANGE_CACHE_SIZE:
+            self._cache.popitem(last=False)
+        return token

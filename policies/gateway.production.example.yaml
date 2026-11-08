@@ -14,6 +14,8 @@ oidc:
   audience: api://ai-gateway            # the app registration's Application ID URI
   groups_claim: groups                  # Entra ID sends group object IDs unless configured for names
   user_claim: preferred_username        # the user's sign-in name in the audit log
+  client_id: <gateway-app-client-id>    # for MCP calls on behalf of people (ADR-0012)
+  client_secret_vault_path: secret/data/aigw/oidc
 
 # Upstream credentials: Vault in the cluster, reached over TLS, gateway logs in as its service account.
 vault:
@@ -49,7 +51,8 @@ models:
 mcp_servers:
   - name: jira
     url: http://jira-mcp.mcp.svc:8000/mcp
-    vault_path: secret/data/aigw/mcp/jira     # the server's service token, from Vault KV
+    vault_path: secret/data/aigw/mcp/jira     # service token, for API-key callers
+    on_behalf_of: <jira-mcp-app-id>           # people reach Jira as themselves (ADR-0012)
 
 teams:
   # People sign in; group membership in the IdP decides the team. No keys to hand out or rotate.

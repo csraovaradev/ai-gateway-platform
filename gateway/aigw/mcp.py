@@ -21,6 +21,7 @@ from opentelemetry.trace import SpanKind
 from . import audit
 from .config import GatewayConfig, McpServerSpec, TeamSpec
 from .errors import GatewayError
+from .oidc import OidcError, TokenExchanger, current_subject_token
 from .ratelimit import RateLimiter
 from .store import Store
 from .tracing import tracer
@@ -79,6 +80,7 @@ def build_mcp_router(
     vault: VaultClient | None = None,
     http: httpx.AsyncClient | None = None,
     user_rate_ok: Callable[[TeamSpec, str | None], Awaitable[tuple[bool, int]]] | None = None,
+    exchanger: TokenExchanger | None = None,
 ) -> APIRouter:
     servers = {s.name: s for s in config.mcp_servers}
     if user_rate_ok is None:
@@ -103,6 +105,20 @@ def build_mcp_router(
                                team: TeamSpec) -> dict[str, str]:
         headers = {k: v for k, v in request.headers.items()
                    if k in FORWARD_HEADERS or k.startswith(FORWARD_PREFIX)}
+        subject = current_subject_token()
+        if spec.on_behalf_of and subject is not None and exchanger is not None:
+            # A signed-in person: the server gets a token issued to it for that person, so its
+            # own permissions and logs apply to the person, not to the gateway (ADR-0012).
+            try:
+                headers["authorization"] = (
+                    f"Bearer {await exchanger.exchange(subject, spec.on_behalf_of)}")
+            except OidcError as exc:
+                audit.record(event="mcp", team=team.name, server=spec.name, status="error",
+                             http_status=502, reason=exc.reason)
+                raise GatewayError(502, "could not obtain a token for this mcp server",
+                                   "upstream_error") from exc
+            return headers
+        # API-key callers (services, CI) have no person to act as: the server's service token.
         if secret := tokens.get(spec.name):
             try:
                 token = (await anyio.to_thread.run_sync(secret.get)).get("token")

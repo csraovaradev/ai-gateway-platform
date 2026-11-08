@@ -138,6 +138,26 @@ After `failure_threshold` consecutive failures a model is skipped for `cooldown_
 (`"reason": "circuit_open"`), then one trial request goes through. `aigw_fallbacks_total` counts
 fallbacks by team, requested, and served model.
 
+## MCP calls on behalf of the signed-in person
+
+With `on_behalf_of`, an MCP server receives a token issued to it for the person calling, obtained by
+OAuth token exchange, so its own permissions and logs apply to that person
+([ADR-0012](adr/0012-mcp-on-behalf-of.md)). The person's own token never leaves the gateway.
+
+```yaml
+oidc:
+  # ...
+  client_id: aigw                          # the gateway's client at the identity provider
+  client_secret_vault_path: secret/data/aigw/oidc
+mcp_servers:
+  - name: jira
+    url: http://jira-mcp:9000/mcp
+    on_behalf_of: jira-mcp                 # the server's client ID: the new token's audience
+```
+
+The server should verify the token like any resource server: signature against the identity
+provider's keys, issuer, and `aud`. The level 2 Keycloak realm already has both clients configured.
+
 ## Per-person limits
 
 With sign-in, each person in a team can have their own rate limit and budget on top of the team's

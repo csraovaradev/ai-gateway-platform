@@ -66,7 +66,7 @@
 
 | STRIDE | Threat | Mitigation | Where |
 |---|---|---|---|
-| Info disclosure | Client's gateway key forwarded to an MCP server | Never forwarded; upstream token comes from Vault | `mcp.py` |
+| Info disclosure | Client's gateway key or sign-in token forwarded to an MCP server | Never forwarded: signed-in people's calls carry a token exchanged for that server only (audience-bound); API-key calls carry the server's service token from Vault | `mcp.py`, ADR-0012 |
 | Info disclosure | Developers paste secrets or customer data into prompts, which then leave for the model provider | Detectors for keys, tokens, private keys, emails, card numbers; per-team redact, block, or audit; findings audited by kind only | `guardrails.py`, ADR-0010 |
 | Info disclosure | Prompt or tool content in logs, metrics, or spans | Metadata only, enforced by tests | `audit.py`, `metrics.py`, tests |
 | DoS | One model, region, or account outage stalls every agent | Per-model fallbacks with a circuit breaker; fallbacks respect team allowlists and budgets, and are visible in responses and the audit log | `routing.py`, ADR-0009 |

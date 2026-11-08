@@ -16,6 +16,8 @@ services:
       # Fixed ID so the container can start before Vault is configured; created by local-setup.sh
       # with only the aigw policy. Production uses Kubernetes auth instead (ADR-0008).
       VAULT_TOKEN: aigw-local-gateway-token
+      # The gateway's OIDC client secret for token exchange (ADR-0012); public, local-only.
+      AIGW_OIDC_CLIENT_SECRET: aigw-gateway-dev-secret
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_SERVICE_NAME: aigw
     depends_on: [jira-mcp, redis, vault, keycloak]

@@ -11,9 +11,10 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+import anyio
 import httpx
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -22,20 +23,26 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from . import audit, metrics, tracing
 from .auth import Authenticator
-from .config import GatewayConfig, ModelSpec, TeamSpec, load_config
+from .config import GatewayConfig, ModelSpec, OidcSpec, TeamSpec, load_config
 from .errors import GatewayError
 from .guardrails import ContentGuard
 from .limits import BodySizeLimit
 from .mcp import build_mcp_router
 from .messages import build_messages_router
 from .metering import Meter, cost_usd
-from .oidc import OidcError, OidcVerifier, looks_like_jwt
+from .oidc import (
+    OidcError,
+    OidcVerifier,
+    TokenExchanger,
+    looks_like_jwt,
+    set_subject_token,
+)
 from .providers import Provider, ProviderError, build_provider
 from .ratelimit import RateLimiter
 from .routing import CircuitBreaker, Route, Router, audit_fields, first_event
 from .schemas import ChatCompletionRequest
 from .store import MemoryStore, RedisStore, Store, StoreError
-from .vault import VaultClient
+from .vault import LeasedSecret, VaultClient
 
 DEFAULT_CONFIG = "/etc/aigw/gateway.yaml"
 log = logging.getLogger("aigw")
@@ -60,12 +67,27 @@ async def _chain(first: list[Any], rest: AsyncIterator[Any]) -> AsyncIterator[An
         yield item
 
 
+def client_secret(spec: OidcSpec, vault: VaultClient | None) -> Callable[[], Awaitable[str]]:
+    """The gateway's OIDC client secret: from Vault KV in production, an env var on a laptop."""
+    if spec.client_secret_vault_path and vault is not None:
+        secret = LeasedSecret(vault, spec.client_secret_vault_path)
+
+        async def from_vault() -> str:
+            return str((await anyio.to_thread.run_sync(secret.get)).get("client_secret", ""))
+        return from_vault
+
+    async def from_env() -> str:
+        return os.environ.get(spec.client_secret_env or "", "")
+    return from_env
+
+
 def create_app(
     config: GatewayConfig | None = None,
     providers: dict[str, Provider] | None = None,
     limiter: RateLimiter | None = None,
     mcp_http: httpx.AsyncClient | None = None,
     oidc: OidcVerifier | None = None,
+    exchanger: TokenExchanger | None = None,
 ) -> FastAPI:
     config = config or load_config(os.environ.get("GATEWAY_CONFIG", DEFAULT_CONFIG))
     models = {m.name: m for m in config.models}
@@ -74,6 +96,8 @@ def create_app(
     authenticator = Authenticator(config.teams)
     if oidc is None and config.oidc:
         oidc = OidcVerifier(config.oidc)
+    if exchanger is None and config.oidc and config.oidc.can_exchange:
+        exchanger = TokenExchanger(config.oidc, client_secret(config.oidc, vault))
     store: Store = (RedisStore(config.store.url, config.store.key_prefix, tls=config.store.tls)
                     if config.store.backend == "redis" else MemoryStore())
     limiter = limiter or RateLimiter(store)
@@ -110,6 +134,7 @@ def create_app(
 
     async def current_team(request: Request) -> TeamSpec:
         audit.set_user(None)
+        set_subject_token(None)
         # Failed auth is audited too, but never with the presented token.
         denied = {"event": "auth", "path": request.url.path,
                   "client": request.client.host if request.client else None,
@@ -146,6 +171,7 @@ def create_app(
                                "authentication_error") from exc
         user, groups = verifier.user(claims), verifier.groups(claims)
         audit.set_user(user)
+        set_subject_token(token)  # for exchanging into MCP-server tokens (ADR-0012)
         team = next((t for t in config.teams if groups & set(t.oidc_groups)), None)
         if team is None:
             audit.record(**{**denied, "http_status": 403}, reason="no_team_for_groups")
@@ -347,6 +373,6 @@ def create_app(
     app.include_router(build_messages_router(models, providers, current_team, admit, meter,
                                              plan, router, screen))
     app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http,
-                                        user_rate_ok))
+                                        user_rate_ok, exchanger))
     tracing.setup(app)
     return app

@@ -57,6 +57,23 @@ class OidcSpec(BaseModel):
     jwks_cache_seconds: int = Field(default=300, gt=0)
     timeout_seconds: float = 10.0
     tls: TLSSpec = Field(default_factory=TLSSpec)
+    # The gateway's own client at the identity provider, used to exchange a person's token for one
+    # issued to an MCP server (`on_behalf_of`, ADR-0012). Secret from Vault KV (field
+    # `client_secret`) in production, or an environment variable on a laptop.
+    client_id: str | None = None
+    client_secret_vault_path: str | None = None
+    client_secret_env: str | None = None
+    token_url: str | None = None  # default: `token_endpoint` from the discovery document
+
+    @model_validator(mode="after")
+    def _check_client(self) -> OidcSpec:
+        if self.client_secret_vault_path and self.client_secret_env:
+            raise ValueError("oidc: set client_secret_vault_path or client_secret_env, not both")
+        return self
+
+    @property
+    def can_exchange(self) -> bool:
+        return bool(self.client_id and (self.client_secret_vault_path or self.client_secret_env))
 
 
 class Price(BaseModel):
@@ -134,6 +151,9 @@ class McpServerSpec(BaseModel):
     url: str  # Streamable HTTP endpoint, e.g. http://jira-mcp:8000/mcp
     vault_path: str | None = None  # KV v2 secret whose `token` is sent upstream as a bearer token
     timeout_seconds: float = 60.0
+    # For signed-in people, send a token issued to this audience (the server's client ID at the
+    # identity provider) on the person's behalf, instead of the service token (ADR-0012).
+    on_behalf_of: str | None = None
 
 
 ContentAction = Literal["off", "audit", "redact", "block"]
@@ -222,6 +242,8 @@ class GatewayConfig(BaseModel):
     def _check_references(self) -> GatewayConfig:
         needs_vault = [m.name for m in self.models if m.vault_path]
         needs_vault += [s.name for s in self.mcp_servers if s.vault_path]
+        if self.oidc and self.oidc.client_secret_vault_path:
+            needs_vault.append("oidc")
         if needs_vault and self.vault is None:
             raise ValueError(f"{needs_vault} use vault_path but no vault section is set")
         names = [m.name for m in self.models]
@@ -247,6 +269,10 @@ class GatewayConfig(BaseModel):
         if sso_teams and self.oidc is None:
             raise ValueError(f"teams {sso_teams} use oidc_groups but no oidc section is set")
         servers = [s.name for s in self.mcp_servers]
+        acting = [s.name for s in self.mcp_servers if s.on_behalf_of]
+        if acting and not (self.oidc and self.oidc.can_exchange):
+            raise ValueError(f"mcp servers {acting} use on_behalf_of, which needs oidc.client_id "
+                             "and a client secret")
         if len(servers) != len(set(servers)):
             raise ValueError("mcp server names must be unique")
         for team in self.teams:
@@ -279,6 +305,8 @@ class GatewayConfig(BaseModel):
                 issues.append("vault: token auth needs a long-lived token; use kubernetes auth")
         if self.oidc is not None and not self.oidc.issuer.startswith("https://"):
             issues.append("oidc: issuer must be https://")
+        if self.oidc is not None and self.oidc.client_secret_env:
+            issues.append("oidc: client secret read from an env var; use client_secret_vault_path")
         static = [m.name for m in self.models if m.api_key_env]
         if static:
             issues.append(f"models {static} read upstream keys from env vars; use vault_path")

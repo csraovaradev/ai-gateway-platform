@@ -95,7 +95,7 @@ A gateway that can be bypassed controls nothing. Close the other paths:
 | TLS to Vault and Redis, NetworkPolicy, threat model | ✅ | ALB + ACM + WAF at the edge |
 | Managed Claude Code settings | Example file | MDM rollout |
 | Enforcement (SCP, egress blocking) | | Organization-level change |
-| MCP calls as the user (on-behalf-of) | | Token exchange per MCP server |
+| MCP calls as the user: OAuth token exchange (ADR-0012) | ✅ | MCP servers must validate the token |
 | Content controls: secret and PII detection, redact or block (ADR-0010) | ✅ | Tune detectors; prompt-injection filtering is still open |
 | Disaster recovery | Rebuild from Terraform | Second region, tested restore |
 
