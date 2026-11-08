@@ -4,7 +4,7 @@
   calls (Amazon Bedrock, OpenAI-compatible servers, MCP servers).
 - **Method:** STRIDE per trust boundary. Each threat lists its mitigation and where it is enforced, or
   marks it as a gap with the work that closes it.
-- **Last reviewed:** 2026-11-02 (sign-in and run modes, ADR-0007 and ADR-0008).
+- **Last reviewed:** 2026-11-08 (fallback and content guardrails, ADR-0009 and ADR-0010).
 
 ## Assets
 
@@ -67,6 +67,7 @@
 | STRIDE | Threat | Mitigation | Where |
 |---|---|---|---|
 | Info disclosure | Client's gateway key forwarded to an MCP server | Never forwarded; upstream token comes from Vault | `mcp.py` |
+| Info disclosure | Developers paste secrets or customer data into prompts, which then leave for the model provider | Detectors for keys, tokens, private keys, emails, card numbers; per-team redact, block, or audit; findings audited by kind only | `guardrails.py`, ADR-0010 |
 | Info disclosure | Prompt or tool content in logs, metrics, or spans | Metadata only, enforced by tests | `audit.py`, `metrics.py`, tests |
 | DoS | One model, region, or account outage stalls every agent | Per-model fallbacks with a circuit breaker; fallbacks respect team allowlists and budgets, and are visible in responses and the audit log | `routing.py`, ADR-0009 |
 | DoS | Slow or hung upstream ties up the gateway | **Gap → fixed in Phase 6:** explicit Bedrock connect/read timeouts and bounded retries (boto3 defaults allowed ~4 attempts × 60 s) | `bedrock.py`; failure tests |
@@ -90,7 +91,8 @@
 ## Accepted risks
 
 - **Budget overshoot** of at most the requests in flight when a team crosses its budget (ADR-0003).
-- **No content inspection** (PII redaction, prompt-injection filtering). A future policy hook could add it.
+- **Content inspection is pattern-based** (ADR-0010): common secrets and personal data are redacted or
+  blocked, but regular expressions miss unusual formats, and prompt-injection filtering is not done.
 - **API keys do not expire.** People sign in with short-lived tokens instead (ADR-0007); keys remain for
   services and CI, where rotation is a policy change.
 - **A revoked user's token works until it expires** (up to the IdP's access-token lifetime).

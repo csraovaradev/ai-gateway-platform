@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
@@ -135,6 +136,32 @@ class McpServerSpec(BaseModel):
     timeout_seconds: float = 60.0
 
 
+ContentAction = Literal["off", "audit", "redact", "block"]
+
+
+class ContentPolicy(BaseModel):
+    """What to do when a prompt contains a secret or personal data (ADR-0010)."""
+
+    secrets: ContentAction = "redact"  # cloud keys, API tokens, private keys
+    pii: ContentAction = "audit"  # email addresses, card numbers, US social security numbers
+
+
+class ContentRuleSpec(BaseModel):
+    """An extra detector, e.g. for internal hostnames or project code names."""
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    category: Literal["secrets", "pii"]
+    pattern: str  # Python regular expression; a capture group limits redaction to that group
+
+    @model_validator(mode="after")
+    def _compiles(self) -> ContentRuleSpec:
+        try:
+            re.compile(self.pattern)
+        except re.error as exc:
+            raise ValueError(f"content rule {self.name!r}: invalid pattern: {exc}") from exc
+        return self
+
+
 class TeamSpec(BaseModel):
     """A team that calls the gateway, with API keys (stored only as SHA-256 hashes), identity
     provider groups, or both."""
@@ -149,6 +176,7 @@ class TeamSpec(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     requests_per_minute: int = Field(default=60, gt=0)
     budget: Budget | None = None
+    content: ContentPolicy = Field(default_factory=ContentPolicy)
 
     @model_validator(mode="after")
     def _check_identity(self) -> TeamSpec:
@@ -174,6 +202,7 @@ class GatewayConfig(BaseModel):
     store: StoreSpec = Field(default_factory=StoreSpec)
     circuit_breaker: CircuitBreakerSpec = Field(default_factory=CircuitBreakerSpec)
     models: list[ModelSpec]
+    content_rules: list[ContentRuleSpec] = Field(default_factory=list)
     mcp_servers: list[McpServerSpec] = Field(default_factory=list)
     teams: list[TeamSpec]
     max_request_bytes: int = Field(default=1_048_576, gt=0)  # larger bodies get 413
@@ -202,6 +231,9 @@ class GatewayConfig(BaseModel):
             unknown = [m for m in team.allowed_models if m != "*" and m not in known]
             if unknown:
                 raise ValueError(f"team {team.name!r} allows unknown models: {unknown}")
+        rule_names = [r.name for r in self.content_rules]
+        if len(rule_names) != len(set(rule_names)):
+            raise ValueError("content rule names must be unique")
         sso_teams = [t.name for t in self.teams if t.oidc_groups]
         if sso_teams and self.oidc is None:
             raise ValueError(f"teams {sso_teams} use oidc_groups but no oidc section is set")

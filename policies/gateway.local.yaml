@@ -59,6 +59,7 @@ teams:
 
   - name: data
     oidc_groups: [eng-data]
+    content: {secrets: block, pii: redact}   # ADR-0010; other teams: redact secrets, audit PII
     key_sha256:
       - 33ba9b2d29663d7a3a4043d971cd244b328042768f2dcb1a7ef430be104e8dd1
     allowed_models: [mock-echo, claude-haiku-4-5]

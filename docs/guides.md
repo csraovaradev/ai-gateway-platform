@@ -138,6 +138,27 @@ After `failure_threshold` consecutive failures a model is skipped for `cooldown_
 (`"reason": "circuit_open"`), then one trial request goes through. `aigw_fallbacks_total` counts
 fallbacks by team, requested, and served model.
 
+## Secrets and personal data in prompts
+
+Prompts are scanned before they leave ([ADR-0010](adr/0010-content-guardrails.md)). By default
+secrets are redacted and personal data is audited; each team can choose `off`, `audit`, `redact`, or
+`block` per category, and policies can add their own detectors:
+
+```yaml
+content_rules:
+  - name: internal_host
+    category: secrets
+    pattern: '\b[a-z0-9-]+\.corp\.example\.net\b'
+teams:
+  - name: data
+    content: {secrets: block, pii: redact}
+```
+
+The model sees `[REDACTED:aws_access_key_id]` instead of the key; the audit line records
+`"content_findings": {"aws_access_key_id": 1}, "content_action": "redacted"`, never the value. A
+blocked request gets 400 with the kind of thing to remove. Signed thinking blocks, identifiers, and
+encoded images are never modified.
+
 ## MCP tool calls
 
 MCP servers listed under `mcp_servers` are reachable at `/mcp/{name}` with the same team keys

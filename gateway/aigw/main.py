@@ -24,6 +24,7 @@ from . import audit, metrics, tracing
 from .auth import Authenticator
 from .config import GatewayConfig, ModelSpec, TeamSpec, load_config
 from .errors import GatewayError
+from .guardrails import ContentGuard
 from .limits import BodySizeLimit
 from .mcp import build_mcp_router
 from .messages import build_messages_router
@@ -78,6 +79,7 @@ def create_app(
     limiter = limiter or RateLimiter(store)
     meter = Meter(store)
     router = Router(models, CircuitBreaker(config.circuit_breaker))
+    guard = ContentGuard(config.content_rules)
     if config.mode == "development" and (issues := config.production_issues()):
         # Development mode starts anyway, but says what production mode would refuse (ADR-0008).
         log.warning("aigw: development mode; not for shared environments:\n  - %s",
@@ -193,6 +195,18 @@ def create_app(
                                headers={"Retry-After": "3600"})
         return model
 
+    def screen(team: TeamSpec, base: dict[str, Any], body: dict[str, Any],
+               fields: tuple[str, ...]) -> None:
+        """Apply the team's content policy to a request body in place (ADR-0010). Findings go on
+        every audit line of the request; a blocked request is refused here."""
+        verdict = guard.screen(team.content, body, fields)
+        base.update(verdict.audit_fields())
+        if verdict.blocked_by:
+            audit.record(**base, status="denied", http_status=400, reason="content_blocked")
+            raise GatewayError(400, "request blocked by content policy: it contains "
+                               f"{', '.join(verdict.blocked_by)}; remove it and retry",
+                               "invalid_request_error")
+
     async def plan(team: TeamSpec, model: ModelSpec,
                    usable: Callable[[ModelSpec], bool] = lambda _: True) -> Route:
         """The models to try for a request (ADR-0009). A team over budget may still use a free
@@ -209,6 +223,10 @@ def create_app(
         base = {"request_id": request_id, "team": team.name, "model": req.model,
                 "stream": req.stream}
         model = await admit(team, req.model, base)
+        contents = {"messages": [{"content": m.content} for m in req.messages]}
+        screen(team, base, contents, ("messages",))
+        for message, screened in zip(req.messages, contents["messages"], strict=True):
+            message.content = screened["content"]
         route = await plan(team, model)
         started = time.perf_counter()
 
@@ -307,7 +325,7 @@ def create_app(
         return JSONResponse(result, headers=response_headers(served))
 
     app.include_router(build_messages_router(models, providers, current_team, admit, meter,
-                                             plan, router))
+                                             plan, router, screen))
     app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http))
     tracing.setup(app)
     return app

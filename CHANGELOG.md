@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Content guardrails** (ADR-0010): prompts are scanned for secrets (cloud keys, API tokens,
+  private keys) and personal data (emails, card numbers, US SSNs) before they reach a model provider,
+  on every model endpoint including token counting. Per team and category: `off`, `audit`,
+  `redact` (default for secrets), or `block`; personal data is audited by default. Policies can add
+  their own detectors. Audit lines and `aigw_content_findings_total` record the kind and count, never
+  the value. Signed thinking blocks are never modified.
 - **Model fallback and circuit breaking** (ADR-0009): a model that is throttled, down, or timing out
   falls back to the policy's `fallbacks`, only to models the team may use and never onto a priced
   model once the team's budget is spent. Responses carry `X-AIGW-Served-Model`, the audit log

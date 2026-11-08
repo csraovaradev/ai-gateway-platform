@@ -95,7 +95,7 @@ A gateway that can be bypassed controls nothing. Close the other paths:
 | Managed Claude Code settings | Example file | MDM rollout |
 | Enforcement (SCP, egress blocking) | | Organization-level change |
 | MCP calls as the user (on-behalf-of) | | Token exchange per MCP server |
-| Content controls (PII and secret redaction) | | Policy hook; accepted risk today |
+| Content controls: secret and PII detection, redact or block (ADR-0010) | ✅ | Tune detectors; prompt-injection filtering is still open |
 | Disaster recovery | Rebuild from Terraform | Second region, tested restore |
 
 ## Rollout order

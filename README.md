@@ -34,6 +34,7 @@ A single gateway, run as a platform service on EKS:
 | **LLM gateway** | OpenAI-compatible and Anthropic Messages endpoints, so Claude Code, Cursor, and the SDKs work unchanged. Routes to Amazon Bedrock, OpenAI-compatible servers (vLLM, Ollama), or a mock, with streaming, per-team model allowlists, and visible fallback to other models with a circuit breaker. |
 | **MCP gateway** | Fronts upstream MCP servers. Clients connect once; the gateway enforces per-team tool allowlists and logs every tool call. |
 | **Credential broker** | HashiCorp Vault issues **short-lived, scoped credentials** per request. Gateway pods authenticate to Vault with their Kubernetes service account, so no provider keys live in the cluster. |
+| **Content guardrails** | Secrets and personal data in prompts are redacted, blocked, or audited per team before they reach a model provider; the audit log records the kind, never the value. |
 | **Policy & metering** | Per-team rate limits, token budgets, and cost attribution. |
 | **Observability** | OpenTelemetry traces and metrics for every request (latency, tokens, cost, tool usage), plus a structured audit log. |
 
@@ -105,6 +106,9 @@ Not just written, run: on a laptop, in kind, and on Amazon EKS against Claude mo
 - **Fallback that is never silent:** with Sonnet pointed at an unreachable region, real Claude Haiku
   answered, the response named the model that served it, cost was priced as Haiku, and after three
   failures the circuit breaker skipped Sonnet entirely. Claude Code kept working.
+- **Secrets stay inside:** with an AWS key pasted into a Claude Code prompt, the model only ever saw
+  `[REDACTED:aws_access_key_id]` across a multi-turn write-and-read task, and the key appeared
+  nowhere in the gateway's logs.
 - **Failure modes tested:** Vault down, hung upstreams, leaky upstream errors, oversized bodies, and a
   laptop sleeping past its credentials' lifetime (found live, fixed, and now a test).
 - **CI on every push:** 141 tests, lint, a production-mode check of the example policies, Terraform
@@ -137,6 +141,7 @@ ai-gateway-platform/
 - [x] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
 - [x] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
 - [x] **Claude Code support.** Anthropic Messages API with tools, thinking, prompt caching, and cache-aware cost.
+- [x] **Content guardrails.** Secrets and personal data in prompts are redacted, blocked, or audited before they leave.
 - [x] **Fallback and circuit breaking.** A throttled or failing model falls back to another, visibly and within policy.
 - [x] **Identity and run modes.** SSO sign-in through any OIDC provider, per-user audit, production-mode guardrails, and one-command local stacks.
 
@@ -153,6 +158,7 @@ Key choices are recorded as ADRs in [`docs/adr/`](docs/adr/):
 - [0007](docs/adr/0007-user-identity-oidc.md) User identity through the company identity provider
 - [0008](docs/adr/0008-run-modes.md) Development and production run modes
 - [0009](docs/adr/0009-fallback-and-circuit-breaking.md) Model fallback and circuit breaking
+- [0010](docs/adr/0010-content-guardrails.md) Content guardrails for secrets and personal data
 
 ## Contributing and security
 

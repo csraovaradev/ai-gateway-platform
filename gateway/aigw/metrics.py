@@ -25,6 +25,8 @@ TOKENS = Counter("aigw_tokens", "Tokens processed.", ["team", "model", "directio
                  registry=REGISTRY)
 COST = Counter("aigw_cost_usd", "Spend in USD at policy prices.", ["team", "model"],
                registry=REGISTRY)
+CONTENT = Counter("aigw_content_findings", "Secrets and personal data found in prompts (ADR-0010).",
+                  ["team", "detector", "action"], registry=REGISTRY)
 FALLBACKS = Counter("aigw_fallbacks", "Requests answered by a fallback model (ADR-0009).",
                     ["team", "requested", "served"], registry=REGISTRY)
 
@@ -48,6 +50,9 @@ def observe(event: dict[str, Any]) -> None:
     if event.get("latency_ms") is not None:
         stream = "true" if event.get("stream") else "false"
         LATENCY.labels(kind, target, stream).observe(event["latency_ms"] / 1000)
+    # Detector names come from the code and the policy file, so the label set stays bounded.
+    for detector, count in (event.get("content_findings") or {}).items():
+        CONTENT.labels(team, detector, str(event.get("content_action"))).inc(count)
     if kind == "chat_completion" and status != "denied":
         # Tokens and spend belong to the model that answered, which a fallback may have changed.
         served = str(event.get("served_model") or target)

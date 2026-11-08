@@ -62,6 +62,7 @@ teams:
 
   - name: data
     oidc_groups: [<eng-data-group-id>]
+    content: {secrets: block, pii: redact}       # handles customer data: stricter than the default
     allowed_models: [claude-haiku-4-5]
     allowed_tools: ["jira/search", "jira/get_*"]
     requests_per_minute: 30

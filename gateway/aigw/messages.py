@@ -36,6 +36,9 @@ ATTRIBUTION = {"x-claude-code-session-id": "session_id", "x-claude-code-agent-id
 
 Admit = Callable[[TeamSpec, Any, dict[str, Any]], Awaitable[ModelSpec]]
 Plan = Callable[..., Awaitable[Route]]
+Screen = Callable[[TeamSpec, dict[str, Any], dict[str, Any], tuple[str, ...]], None]
+# The parts of a Messages request that are sent to the model as text (ADR-0010).
+SCREENED_FIELDS = ("system", "messages")
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -93,6 +96,7 @@ def build_messages_router(
     meter: Meter,
     plan: Plan,
     routing: Router,
+    screen: Screen,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -149,6 +153,7 @@ def build_messages_router(
         }
         model = await admit(team, name, base)
         messages_provider(name, base)
+        screen(team, base, body, SCREENED_FIELDS)
         # Fallbacks must speak the Messages API too (ADR-0009).
         route = await plan(team, model, lambda m: hasattr(providers[m.name], "messages"))
         started = time.perf_counter()
@@ -228,6 +233,7 @@ def build_messages_router(
         if name not in models or not team.allows(name):
             audit.record(**base, status="denied", http_status=404, reason="unknown_model")
             raise GatewayError(404, f"model {name!r} not found", "invalid_request_error")
+        screen(team, base, body, SCREENED_FIELDS)  # counting also sends the prompt upstream
         provider = providers[name]
         if not hasattr(provider, "count_tokens"):
             # Claude Code falls back to a local estimate when this endpoint is missing.
