@@ -1,7 +1,8 @@
-"""Cost per request and per-team budgets (ADR-0003).
+"""Cost per request, and budgets per team and per signed-in person (ADR-0003, ADR-0011).
 
-Spend is kept in the shared store under one key per team and budget period (UTC), so every
-replica sees the same total. Budgets are checked before a request and charged after it.
+Spend is kept in the shared store under one key per team (and per person, when the team has a
+per-person budget) and budget period (UTC), so every replica sees the same total. Budgets are
+checked before a request and charged after it.
 """
 
 from __future__ import annotations
@@ -34,26 +35,39 @@ class Meter:
         self._store = store
         self._clock = clock
 
-    def _period(self, team: TeamSpec) -> tuple[str, int]:
-        """Store key for the team's current budget period, and seconds until it can expire."""
+    def _period(self, team: TeamSpec, user: str | None = None) -> tuple[str, int]:
+        """Store key for the current budget period of the team (or of one person in it), and
+        seconds until it can expire."""
         now = self._clock()
-        period = team.budget.period if team.budget else "month"
+        budget = team.per_user.budget if user else team.budget
+        period = budget.period if budget else "month"
         if period == "day":
             label = now.strftime("%Y-%m-%d")
             end = datetime(now.year, now.month, now.day, tzinfo=UTC) + timedelta(days=1)
         else:
             label = now.strftime("%Y-%m")
             end = datetime(now.year + now.month // 12, now.month % 12 + 1, 1, tzinfo=UTC)
-        return f"spend:{team.name}:{label}", int((end + _GRACE - now).total_seconds())
+        subject = team.name if user is None else f"{team.name}/user:{user}"
+        return f"spend:{subject}:{label}", int((end + _GRACE - now).total_seconds())
 
-    async def spent(self, team: TeamSpec) -> float:
-        key, _ = self._period(team)
+    async def spent(self, team: TeamSpec, user: str | None = None) -> float:
+        key, _ = self._period(team, user)
         return float(await self._store.get(key) or 0)
 
     async def over_budget(self, team: TeamSpec) -> bool:
         return team.budget is not None and await self.spent(team) >= team.budget.usd
 
-    async def charge(self, team: TeamSpec, amount: float) -> None:
-        if amount > 0:
-            key, ttl = self._period(team)
+    async def user_over_budget(self, team: TeamSpec, user: str | None) -> bool:
+        budget = team.per_user.budget
+        if user is None or budget is None:
+            return False
+        return await self.spent(team, user) >= budget.usd
+
+    async def charge(self, team: TeamSpec, amount: float, user: str | None = None) -> None:
+        if amount <= 0:
+            return
+        key, ttl = self._period(team)
+        await self._store.incr(key, amount, ttl)
+        if user is not None and team.per_user.budget is not None:
+            key, ttl = self._period(team, user)
             await self._store.incr(key, amount, ttl)

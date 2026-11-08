@@ -1,4 +1,5 @@
-"""Cost attribution from the audit log: spend, tokens, and tool calls per team (ADR-0003).
+"""Cost attribution from the audit log: spend, tokens, and tool calls per team, model, and
+signed-in person (ADR-0003, ADR-0011).
 
     python -m aigw.report audit.log [more.log ...]
     kubectl logs deploy/aigw | python -m aigw.report
@@ -25,6 +26,8 @@ def _blank() -> dict[str, Any]:
 def summarize(lines: Iterable[str]) -> dict[str, Any]:
     llm: dict[tuple[str, str], dict[str, Any]] = defaultdict(_blank)
     tools: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: {"calls": 0, "denied": 0})
+    users: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {"requests": 0, "cost_usd": 0.0})
     for line in lines:
         try:
             event = json.loads(line)
@@ -34,26 +37,34 @@ def summarize(lines: Iterable[str]) -> dict[str, Any]:
             continue
         team = event.get("team", "?")
         if event.get("event") == "chat_completion":
-            row = llm[(team, event.get("model", "?"))]
+            # Cost belongs to the model that answered, which a fallback may have changed.
+            row = llm[(team, event.get("served_model") or event.get("model", "?"))]
             row["requests"] += 1
             row["denied"] += event.get("status") == "denied"
             row["errors"] += event.get("status") == "error"
             row["prompt_tokens"] += event.get("prompt_tokens") or 0
             row["completion_tokens"] += event.get("completion_tokens") or 0
             row["cost_usd"] += event.get("cost_usd") or 0.0
+            if event.get("user"):
+                person = users[(team, event["user"])]
+                person["requests"] += 1
+                person["cost_usd"] += event.get("cost_usd") or 0.0
         elif event.get("event") == "mcp" and event.get("method") == "tools/call":
             row = tools[(team, f"{event.get('server')}/{event.get('tool')}")]
             row["calls"] += 1
             row["denied"] += event.get("status") == "denied"
 
     teams: dict[str, dict[str, Any]] = defaultdict(lambda: {"cost_usd": 0.0, "models": {},
-                                                            "tools": {}})
+                                                            "tools": {}, "users": {}})
     for (team, model), row in sorted(llm.items()):
         row["cost_usd"] = round(row["cost_usd"], 6)
         teams[team]["models"][model] = row
         teams[team]["cost_usd"] = round(teams[team]["cost_usd"] + row["cost_usd"], 6)
     for (team, tool), row in sorted(tools.items()):
         teams[team]["tools"][tool] = row
+    for (team, user), row in sorted(users.items(), key=lambda kv: -kv[1]["cost_usd"]):
+        row["cost_usd"] = round(row["cost_usd"], 6)
+        teams[team]["users"][user] = row
     return {"total_cost_usd": round(sum(t["cost_usd"] for t in teams.values()), 6),
             "teams": dict(sorted(teams.items(), key=lambda kv: -kv[1]["cost_usd"]))}
 
@@ -73,6 +84,10 @@ def render(summary: dict[str, Any], out: TextIO) -> None:
             out.write(f"  {'mcp tool':<22}{'calls':>9}{'denied':>8}\n")
         for tool, r in data["tools"].items():
             out.write(f"  {tool:<22}{r['calls']:>9}{r['denied']:>8}\n")
+        if data["users"]:
+            out.write(f"  {'signed-in user':<22}{'requests':>9}{'cost USD':>13}\n")
+        for user, r in data["users"].items():
+            out.write(f"  {user:<22}{r['requests']:>9}{r['cost_usd']:>13.6f}\n")
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -35,7 +35,7 @@ A single gateway, run as a platform service on EKS:
 | **MCP gateway** | Fronts upstream MCP servers. Clients connect once; the gateway enforces per-team tool allowlists and logs every tool call. |
 | **Credential broker** | HashiCorp Vault issues **short-lived, scoped credentials** per request. Gateway pods authenticate to Vault with their Kubernetes service account, so no provider keys live in the cluster. |
 | **Content guardrails** | Secrets and personal data in prompts are redacted, blocked, or audited per team before they reach a model provider; the audit log records the kind, never the value. |
-| **Policy & metering** | Per-team rate limits, token budgets, and cost attribution. |
+| **Policy & metering** | Rate limits, budgets, and cost attribution per team and per signed-in person. |
 | **Observability** | OpenTelemetry traces and metrics for every request (latency, tokens, cost, tool usage), plus a structured audit log. |
 
 ## Architecture
@@ -141,6 +141,7 @@ ai-gateway-platform/
 - [x] **Phase 5: Observability.** OTel traces and metrics, dashboards, and SLOs for latency and availability.
 - [x] **Phase 6: Hardening.** mTLS between components, NetworkPolicies, a threat model, and failure-mode tests.
 - [x] **Claude Code support.** Anthropic Messages API with tools, thinking, prompt caching, and cache-aware cost.
+- [x] **Per-person limits.** Rate limits and budgets for each signed-in person, so one runaway agent cannot lock out a team.
 - [x] **Content guardrails.** Secrets and personal data in prompts are redacted, blocked, or audited before they leave.
 - [x] **Fallback and circuit breaking.** A throttled or failing model falls back to another, visibly and within policy.
 - [x] **Identity and run modes.** SSO sign-in through any OIDC provider, per-user audit, production-mode guardrails, and one-command local stacks.
@@ -159,6 +160,7 @@ Key choices are recorded as ADRs in [`docs/adr/`](docs/adr/):
 - [0008](docs/adr/0008-run-modes.md) Development and production run modes
 - [0009](docs/adr/0009-fallback-and-circuit-breaking.md) Model fallback and circuit breaking
 - [0010](docs/adr/0010-content-guardrails.md) Content guardrails for secrets and personal data
+- [0011](docs/adr/0011-per-user-limits.md) Per-person rate limits and budgets
 
 ## Contributing and security
 

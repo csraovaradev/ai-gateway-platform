@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Per-person limits** (ADR-0011): `per_user: {requests_per_minute, budget}` on a team gives each
+  signed-in person their own rate limit (model APIs and MCP tool calls) and budget, on top of the
+  team's. API-key callers keep team limits only. The cost report adds spend per person and
+  attributes cost to the model that answered.
 - **Content guardrails** (ADR-0010): prompts are scanned for secrets (cloud keys, API tokens,
   private keys) and personal data (emails, card numbers, US SSNs) before they reach a model provider,
   on every model endpoint including token counting. Per team and category: `off`, `audit`,

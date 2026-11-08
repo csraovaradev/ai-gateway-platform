@@ -171,6 +171,12 @@ def create_app(
         ]
         return {"object": "list", "data": data}
 
+    async def user_rate_ok(team: TeamSpec, user: str | None) -> tuple[bool, int]:
+        """Per-person rate limit for signed-in users (ADR-0011); API-key callers have none."""
+        if user is None or team.per_user.requests_per_minute is None:
+            return True, 0
+        return await limiter.check(f"{team.name}/user:{user}", team.per_user.requests_per_minute)
+
     async def admit(team: TeamSpec, name: Any, base: dict[str, Any]) -> ModelSpec:
         """Policy checks shared by both APIs; each refusal is audited with its reason."""
         if name not in models:
@@ -179,12 +185,24 @@ def create_app(
         if not team.allows(name):
             audit.record(**base, status="denied", http_status=403, reason="model_not_allowed")
             raise GatewayError(403, f"team not allowed to use {name!r}", "permission_error")
+        user = audit.current_user()
+        allowed, retry_after = await user_rate_ok(team, user)
+        if not allowed:
+            audit.record(**base, status="denied", http_status=429, reason="user_rate_limited")
+            raise GatewayError(429, "your personal rate limit is exceeded", "rate_limit_error",
+                               headers={"Retry-After": str(retry_after)})
         allowed, retry_after = await limiter.check(team.name, team.requests_per_minute)
         if not allowed:
             audit.record(**base, status="denied", http_status=429, reason="rate_limited")
             raise GatewayError(429, "rate limit exceeded", "rate_limit_error",
                                headers={"Retry-After": str(retry_after)})
         model = models[name]
+        if model.price is not None and await meter.user_over_budget(team, user):
+            audit.record(**base, status="denied", http_status=429, reason="user_budget_exceeded")
+            personal = team.per_user.budget
+            raise GatewayError(429, f"you have used your personal budget of ${personal.usd:g} "
+                               f"per {personal.period}", "insufficient_quota",
+                               headers={"Retry-After": "3600"})
         # Budgets limit spend, so they only gate models that cost something.
         if model.price is not None and await meter.over_budget(team):
             audit.record(**base, status="denied", http_status=429, reason="budget_exceeded")
@@ -212,7 +230,8 @@ def create_app(
         """The models to try for a request (ADR-0009). A team over budget may still use a free
         model, but must not spill onto a priced fallback when that free model fails."""
         over = (model.price is None and any(models[f].price for f in model.fallbacks)
-                and await meter.over_budget(team))
+                and (await meter.over_budget(team)
+                     or await meter.user_over_budget(team, audit.current_user())))
         return router.route(team, model.name, lambda m: usable(m) and not (over and m.price))
 
     @app.post("/v1/chat/completions", response_model=None)
@@ -223,6 +242,7 @@ def create_app(
         base = {"request_id": request_id, "team": team.name, "model": req.model,
                 "stream": req.stream}
         model = await admit(team, req.model, base)
+        user = audit.current_user()
         contents = {"messages": [{"content": m.content} for m in req.messages]}
         screen(team, base, contents, ("messages",))
         for message, screened in zip(req.messages, contents["messages"], strict=True):
@@ -301,7 +321,7 @@ def create_app(
                                      prompt_tokens=prompt, completion_tokens=completion,
                                      cost_usd=cost, **audit_fields(route, model.name, served),
                                      **extra)
-                        await meter.charge(team, cost)
+                        await meter.charge(team, cost, user)
 
             return StreamingResponse(events(), media_type="text/event-stream",
                                      headers=response_headers(served))
@@ -321,11 +341,12 @@ def create_app(
             audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(),
                          prompt_tokens=prompt, completion_tokens=completion, cost_usd=cost,
                          **audit_fields(route, model.name, served))
-        await meter.charge(team, cost)
+        await meter.charge(team, cost, user)
         return JSONResponse(result, headers=response_headers(served))
 
     app.include_router(build_messages_router(models, providers, current_team, admit, meter,
                                              plan, router, screen))
-    app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http))
+    app.include_router(build_mcp_router(config, current_team, limiter, store, vault, mcp_http,
+                                        user_rate_ok))
     tracing.setup(app)
     return app

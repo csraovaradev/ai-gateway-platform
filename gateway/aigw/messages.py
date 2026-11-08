@@ -152,6 +152,7 @@ def build_messages_router(
                if h in request.headers},
         }
         model = await admit(team, name, base)
+        user = audit.current_user()
         messages_provider(name, base)
         screen(team, base, body, SCREENED_FIELDS)
         # Fallbacks must speak the Messages API too (ADR-0009).
@@ -176,7 +177,7 @@ def build_messages_router(
             fields = usage.fields(served)  # priced as the model that answered
             audit.record(**base, status="ok", http_status=200, latency_ms=elapsed_ms(), **fields,
                          **audit_fields(route, name, served))
-            await meter.charge(team, fields["cost_usd"])
+            await meter.charge(team, fields["cost_usd"], user)
             result["model"] = served.name
             return JSONResponse(result, headers=headers(served))
 
@@ -219,7 +220,7 @@ def build_messages_router(
                 audit.record(**base, status=status, http_status=200, latency_ms=elapsed_ms(),
                              chunks=chunks, **fields, **audit_fields(route, name, served),
                              **extra)
-                await meter.charge(team, fields["cost_usd"])
+                await meter.charge(team, fields["cost_usd"], user)
 
         return StreamingResponse(relay(), media_type="text/event-stream",
                                  headers={**headers(served), "Cache-Control": "no-cache"})

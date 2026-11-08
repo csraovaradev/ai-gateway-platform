@@ -138,6 +138,23 @@ After `failure_threshold` consecutive failures a model is skipped for `cooldown_
 (`"reason": "circuit_open"`), then one trial request goes through. `aigw_fallbacks_total` counts
 fallbacks by team, requested, and served model.
 
+## Per-person limits
+
+With sign-in, each person in a team can have their own rate limit and budget on top of the team's
+([ADR-0011](adr/0011-per-user-limits.md)), so one runaway agent cannot lock out everyone else.
+API-key callers (services, CI) only have the team's limits.
+
+```yaml
+teams:
+  - name: platform
+    requests_per_minute: 120
+    budget: {usd: 500, period: month}
+    per_user: {requests_per_minute: 30, budget: {usd: 50, period: month}}
+```
+
+Refusals say which limit was hit (`your personal rate limit is exceeded`), and
+`python -m aigw.report` lists spend per signed-in person.
+
 ## Secrets and personal data in prompts
 
 Prompts are scanned before they leave ([ADR-0010](adr/0010-content-guardrails.md)). By default

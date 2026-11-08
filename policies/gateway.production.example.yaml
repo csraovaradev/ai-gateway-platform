@@ -59,6 +59,7 @@ teams:
     allowed_tools: ["jira/*"]
     requests_per_minute: 120
     budget: {usd: 500, period: month}
+    per_user: {requests_per_minute: 30, budget: {usd: 50, period: month}}   # no one person can drain it
 
   - name: data
     oidc_groups: [<eng-data-group-id>]

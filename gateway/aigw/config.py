@@ -162,6 +162,14 @@ class ContentRuleSpec(BaseModel):
         return self
 
 
+class PerUserLimits(BaseModel):
+    """Limits for each signed-in person in a team, on top of the team's own (ADR-0011). Callers
+    using an API key have no person attached, so only the team's limits apply to them."""
+
+    requests_per_minute: int | None = Field(default=None, gt=0)
+    budget: Budget | None = None
+
+
 class TeamSpec(BaseModel):
     """A team that calls the gateway, with API keys (stored only as SHA-256 hashes), identity
     provider groups, or both."""
@@ -177,6 +185,7 @@ class TeamSpec(BaseModel):
     requests_per_minute: int = Field(default=60, gt=0)
     budget: Budget | None = None
     content: ContentPolicy = Field(default_factory=ContentPolicy)
+    per_user: PerUserLimits = Field(default_factory=PerUserLimits)
 
     @model_validator(mode="after")
     def _check_identity(self) -> TeamSpec:

@@ -48,7 +48,7 @@
 | Info disclosure | Upstream error text (AWS ARNs and account ID, Vault paths) returned to clients | **Gap → fixed in Phase 6:** clients get a generic message and `request_id`; detail stays in the audit log. Exception (ADR-0006): on `/v1/messages`, Bedrock `ValidationException` wording passes through with ARNs and account IDs scrubbed, because Claude Code's retries depend on it | `main.py`, `mcp.py`, `messages.py` |
 | Info disclosure | `/metrics` exposes team names and spend | **Gap → fixed in Phase 6:** NetworkPolicy admits only ingress controller and Prometheus; ingress routes only `/v1` and `/mcp` | Helm chart |
 | DoS | Oversized request bodies exhaust memory | **Gap → fixed in Phase 6:** body size limit (default 1 MiB) → 413 | `main.py` |
-| DoS | Request floods, budget burn | Per-team sliding-window rate limit and budgets, shared across replicas | `store.py`, `metering.py` |
+| DoS | Request floods, budget burn | Per-team and per-person sliding-window rate limits and budgets, shared across replicas | `store.py`, `metering.py` |
 | DoS | Made-up token key IDs flood the IdP with JWKS fetches | Refetch at most every 30 s; cached keys keep working while the IdP is down | `oidc.py` |
 | DoS | Unbounded metric labels from client strings | Labels only from policy values | `metrics.py`, ADR-0004 |
 | Elevation | Call a model or tool outside the team's policy | Allowlists checked before forwarding; `tools/list` filtered; batches rejected | `main.py`, `mcp.py` |

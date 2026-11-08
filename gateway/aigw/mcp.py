@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import anyio
@@ -78,8 +78,12 @@ def build_mcp_router(
     store: Store,
     vault: VaultClient | None = None,
     http: httpx.AsyncClient | None = None,
+    user_rate_ok: Callable[[TeamSpec, str | None], Awaitable[tuple[bool, int]]] | None = None,
 ) -> APIRouter:
     servers = {s.name: s for s in config.mcp_servers}
+    if user_rate_ok is None:
+        async def user_rate_ok(team: TeamSpec, user: str | None) -> tuple[bool, int]:
+            return True, 0
     tokens = {s.name: LeasedSecret(vault, s.vault_path)
               for s in config.mcp_servers if vault and s.vault_path}
     client = http or httpx.AsyncClient()
@@ -167,6 +171,11 @@ def build_mcp_router(
             if not team.allows_tool(server, name):
                 return deny("tool_not_allowed", PERMISSION_DENIED,
                             f"tool {name!r} is not allowed for team {team.name!r}")
+            allowed, retry_after = await user_rate_ok(team, audit.current_user())
+            if not allowed:
+                return deny("user_rate_limited", PERMISSION_DENIED,
+                            "your personal rate limit is exceeded", 429,
+                            {"Retry-After": str(retry_after)})
             allowed, retry_after = await limiter.check(team.name, team.requests_per_minute)
             if not allowed:
                 return deny("rate_limited", PERMISSION_DENIED, "rate limit exceeded", 429,
