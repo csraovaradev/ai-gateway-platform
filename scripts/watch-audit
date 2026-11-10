@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Show the gateway's decision for every request as it happens, one readable line each.
+
+    docker compose -f compose.yaml -f compose.full.yaml logs -f gateway --no-log-prefix \\
+      | scripts/watch-audit
+    kubectl -n aigw logs -f deploy/aigw | scripts/watch-audit
+
+Reads audit JSON lines on stdin and skips everything else. Like the audit log itself, it never
+shows prompt or response text: only who, what, the decision, and the cost.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def paint(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if COLOR else text
+
+
+def describe(e: dict) -> str | None:
+    kind, status = e.get("event"), e.get("status")
+    who = e.get("user") or (f"team key ({e['team']})" if e.get("team") else "unknown caller")
+    team = f" · {e['team']}" if e.get("team") and e.get("user") else ""
+    ts = str(e.get("ts", ""))[11:19]
+
+    if kind == "auth":
+        reason = {"invalid_api_key": "unknown API key", "missing_token": "no credentials",
+                  "no_team_for_groups": "signed in, but no team for their groups"}.get(
+            e.get("reason"), f"sign-in rejected: {e.get('reason')}")
+        return f"{ts}  {paint('31', '✗ DENIED ')} {who}: {reason}"
+
+    if kind == "mcp":
+        target = f"{e.get('server')}/{e.get('tool') or e.get('method')}"
+        if status == "denied":
+            denied = paint("31", "✗ DENIED ")
+            return f"{ts}  {denied} {who}{team} · tool {target}: {e.get('reason')}"
+        return f"{ts}  {paint('32', '✓ TOOL   ')} {who}{team} · {target}"
+
+    if kind not in ("chat_completion", "count_tokens"):
+        return None
+    if kind == "count_tokens":
+        return None  # Claude Code's token counting: noise in a live demo
+
+    model = e.get("model", "?")
+    if status == "denied":
+        reason = {
+            "model_not_allowed": f"team may not use {model}",
+            "rate_limited": "team rate limit reached",
+            "user_rate_limited": "personal rate limit reached",
+            "budget_exceeded": "team budget used up",
+            "user_budget_exceeded": "personal budget used up",
+            "content_blocked": "blocked by content policy",
+            "unknown_model": f"no such model {model}",
+        }.get(e.get("reason"), e.get("reason"))
+        line = f"{ts}  {paint('31', '✗ DENIED ')} {who}{team} · {reason}"
+    elif status == "ok":
+        served = e.get("served_model")
+        route = f"{model} → {paint('33', served + ' (fallback)')}" if served else model
+        cost = f"${e.get('cost_usd') or 0:.4f}"
+        line = f"{ts}  {paint('32', '✓ ALLOWED')} {who}{team} · {route} · {cost}"
+    else:
+        line = f"{ts}  {paint('33', '! ERROR  ')} {who}{team} · {model}: upstream failed"
+
+    findings = e.get("content_findings")
+    if findings:
+        kinds = ", ".join(f"{n}×{c}" if c > 1 else n for n, c in findings.items())
+        action = e.get("content_action", "")
+        line += "  " + paint("35", f"[{action}: {kinds}]")
+    return line
+
+
+def main() -> None:
+    try:
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw.startswith("{"):
+                continue
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            if (line := describe(event)) is not None:
+                print(line, flush=True)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

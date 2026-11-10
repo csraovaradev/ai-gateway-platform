@@ -99,7 +99,14 @@ claude --settings examples/claude-code/settings.local.json
 
 (On another port, copy the file and change `ANTHROPIC_BASE_URL`.)
 
-Every audit line now carries `user: alice` next to `team: platform`. Try `aigw-login logout`, sign in as
+Every audit line now carries `user: alice` next to `team: platform`. To watch the gateway's decision for each
+message as it happens (allowed, denied and why, redacted, fallback, cost):
+
+```bash
+docker compose -f compose.yaml -f compose.full.yaml logs -f gateway --no-log-prefix | scripts/watch-audit
+```
+
+ Try `aigw-login logout`, sign in as
 bob, and ask for `claude-sonnet-4-5`: the data team only has Haiku, so the request is refused (403).
 Carol signs in fine but gets 403 on every request, because none of her groups grants a team.
 
